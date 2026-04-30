@@ -15,7 +15,7 @@ const standaloneExcludes = [
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  allowedDevOrigins: ["http://127.0.0.1:3210"],
+  allowedDevOrigins: ["127.0.0.1"],
   outputFileTracingExcludes: {
     "/**": standaloneExcludes,
   },
