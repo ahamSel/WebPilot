@@ -19,7 +19,6 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 
 ```bash
 npm install
-cp .env.example .env.local
 npm run dev
 ```
 
@@ -31,7 +30,13 @@ For the desktop shell:
 npm run desktop:dev
 ```
 
-## Model Setup
+For normal app usage, configure model providers, API keys, base URLs, and browser/profile behavior from the in-app Settings screen. A `.env.local` file is optional and mainly useful for development, server-side defaults, CLI runs, or automation scripts.
+
+## Model Setup In The App
+
+Open Settings, choose a provider, enter the provider key or local endpoint, choose a model, and save. The runtime settings UI supports Gemini, OpenAI, OpenAI-compatible endpoints, and Ollama.
+
+Optional development defaults can be set with environment variables:
 
 Gemini:
 

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build and checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Electron syntax check
+        run: |
+          node -c electron/main.cjs
+          node -c electron/preload.cjs
+
+      - name: Script syntax check
+        run: |
+          node -c scripts/agent-e2e.js
+          node -c scripts/agent-runner.js
+          node -c scripts/health-check.js
+          node -c scripts/mcp-cli.js
+          node -c scripts/prepare-electron-build.mjs
+          node -c scripts/prepare-playwright-browsers.mjs
+
+      - name: Health check
+        run: npm run health

@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a reproducible problem in WebPilot.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not paste API keys, cookies, browser profile contents, or private browsing data.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The WebPilot version, release tag, or commit SHA you tested.
+      placeholder: v0.1.0 or abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: dropdown
+    id: app_mode
+    attributes:
+      label: App mode
+      options:
+        - Desktop app
+        - Web dev server
+        - CLI
+        - MCP stdio/server
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Model provider and model
+      placeholder: "Ollama llama3.1:8b, OpenAI gpt-4.1, Gemini..."
+    validations:
+      required: false
+  - type: input
+    id: browser_mode
+    attributes:
+      label: Browser mode/profile
+      placeholder: "Managed Chromium temp profile, Chrome profile folder, CDP..."
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps needed to trigger the problem.
+      placeholder: |
+        1. Open Settings
+        2. Select ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant logs or attach screenshots. Redact secrets, cookies, and private page content.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed API keys, cookies, browser profile data, and private browsing content from this report.
+          required: true
