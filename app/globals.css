@@ -1,0 +1,85 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+@theme inline {
+  --color-wp-bg: var(--wp-bg);
+  --color-wp-surface: var(--wp-surface);
+  --color-wp-surface-raised: var(--wp-surface-raised);
+  --color-wp-border: var(--wp-border);
+  --color-wp-text: var(--wp-text);
+  --color-wp-text-secondary: var(--wp-text-secondary);
+  --color-wp-accent: var(--wp-accent);
+  --color-wp-accent-hover: var(--wp-accent-hover);
+  --color-wp-accent-muted: var(--wp-accent-muted);
+  --color-wp-success: var(--wp-success);
+  --color-wp-warning: var(--wp-warning);
+  --color-wp-error: var(--wp-error);
+  --color-wp-info: var(--wp-info);
+  --font-sans: var(--wp-font-sans);
+  --font-mono: var(--wp-font-mono);
+}
+
+body {
+  background: var(--wp-bg);
+  color: var(--wp-text);
+  font-family: var(--wp-font-sans);
+}
+
+/* Minimal prose styles for markdown in chat */
+.wp-prose p { margin: 0.4em 0; }
+.wp-prose { overflow-wrap: anywhere; }
+.wp-prose p:first-child { margin-top: 0; }
+.wp-prose p:last-child { margin-bottom: 0; }
+.wp-prose ul, .wp-prose ol { margin: 0.4em 0; padding-left: 1.25em; }
+.wp-prose li { margin: 0.15em 0; }
+.wp-prose li > ul, .wp-prose li > ol { margin: 0.1em 0; }
+.wp-prose strong { font-weight: 600; color: var(--wp-text); }
+.wp-prose em { font-style: italic; }
+.wp-prose code { font-family: var(--wp-font-mono); font-size: 0.9em; background: var(--wp-surface-raised); padding: 0.1em 0.35em; border-radius: 3px; }
+.wp-prose pre { margin: 0.5em 0; padding: 0.6em 0.8em; background: var(--wp-surface-raised); border-radius: var(--wp-radius-sm); overflow-x: auto; font-size: 0.85em; overflow-wrap: normal; }
+.wp-prose pre code { background: none; padding: 0; white-space: pre; }
+.wp-prose h1, .wp-prose h2, .wp-prose h3 { font-weight: 600; margin: 0.5em 0 0.25em; }
+.wp-prose h3 { font-size: 1em; }
+.wp-prose blockquote { border-left: 2px solid var(--wp-accent); padding-left: 0.75em; margin: 0.4em 0; color: var(--wp-text-secondary); }
+.wp-prose a { color: var(--wp-accent); text-decoration: underline; }
+.wp-prose hr { border-color: var(--wp-border); margin: 0.5em 0; }
+
+/* Electron titlebar drag regions — only active inside .electron root */
+:root {
+  --wp-titlebar-height: 0px;
+}
+.electron .wp-titlebar {
+  -webkit-app-region: drag;
+  position: relative;
+  z-index: 41;
+}
+.electron .wp-titlebar button,
+.electron .wp-titlebar select,
+.electron .wp-titlebar input,
+.electron .wp-titlebar a,
+.electron .wp-titlebar [data-no-drag] {
+  -webkit-app-region: no-drag;
+}
+.electron .wp-drag {
+  -webkit-app-region: drag;
+}
+/* Sidebar border starts below titlebar zone in Electron */
+.electron .wp-sidebar {
+  position: relative;
+}
+.electron .wp-sidebar::after {
+  content: "";
+  position: absolute;
+  top: var(--wp-titlebar-height);
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--wp-border);
+}
+/* Win/Linux: use env(titlebar-area-height) from titleBarOverlay when available */
+@supports (height: env(titlebar-area-height)) {
+:root[data-platform="win32"] .electron .wp-titlebar,
+:root[data-platform="linux"] .electron .wp-titlebar {
+    padding-right: calc(100% - env(titlebar-area-width) - env(titlebar-area-x));
+  }
+}

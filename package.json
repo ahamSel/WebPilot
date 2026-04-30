@@ -1,0 +1,124 @@
+{
+  "name": "web-pilot",
+  "version": "0.1.0",
+  "description": "Open-source agentic browser with Playwright control, BYO model providers, local Ollama, and desktop packaging.",
+  "license": "GPL-3.0-or-later",
+  "author": "WebPilot Contributors",
+  "private": false,
+  "main": "electron/main.cjs",
+  "bin": {
+    "webpilot-mcp": "./bin/mcp-stdio.ts"
+  },
+  "scripts": {
+    "mcp:stdio": "tsx bin/mcp-stdio.ts",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "health": "node scripts/health-check.js",
+    "mcp:cli": "node scripts/mcp-cli.js",
+    "agent:cli": "node scripts/agent-runner.js",
+    "agent:e2e": "node scripts/agent-e2e.js",
+    "browsers:install": "node scripts/prepare-playwright-browsers.mjs",
+    "desktop:dev": "node scripts/electron-dev.mjs",
+    "desktop:start": "electron .",
+    "desktop:build:prepare": "npm run build && npm run browsers:install && node scripts/prepare-electron-build.mjs",
+    "desktop:build": "npm run desktop:build:unsigned",
+    "desktop:build:unsigned": "npm run desktop:build:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "desktop:build:signed": "npm run desktop:build:prepare && electron-builder"
+  },
+  "dependencies": {
+    "@google/genai": "^1.38.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@mozilla/readability": "^0.6.0",
+    "@playwright/mcp": "^0.0.64",
+    "@truto/turndown-plugin-gfm": "^1.0.2",
+    "dotenv": "^17.2.3",
+    "jsdom": "^27.4.0",
+    "lucide-react": "^0.577.0",
+    "next": "^16.1.6",
+    "playwright": "1.59.0-alpha-1770338664000",
+    "playwright-core": "^1.58.2",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-markdown": "^10.1.0",
+    "tsx": "^4.21.0",
+    "turndown": "^7.2.2",
+    "zod": "^4.3.6",
+    "zustand": "^5.0.11"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/jsdom": "^27.0.0",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/turndown": "^5.0.6",
+    "electron": "^40.8.0",
+    "electron-builder": "^26.8.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.1.4",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "com.webpilot.desktop",
+    "productName": "WebPilot",
+    "electronDist": "node_modules/electron/dist",
+    "directories": {
+      "output": "desktop_dist"
+    },
+    "files": [
+      "electron/**/*",
+      "lib/**/*",
+      "tsconfig.json",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/app-icon/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": ".playwright-browsers",
+        "to": "playwright-browsers",
+        "filter": ["!mcp-chrome", "!mcp-chrome/**"]
+      },
+      {
+        "from": ".next/standalone",
+        "to": "standalone"
+      },
+      {
+        "from": ".next/standalone/node_modules",
+        "to": "standalone/node_modules"
+      },
+      {
+        "from": ".next/standalone/.next/node_modules",
+        "to": "standalone/.next/node_modules"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/app-icon/icon.icns",
+      "signIgnore": [
+        "(^|[/\\\\])playwright-browsers([/\\\\]|$)",
+        "(^|[/\\\\])\\.playwright-browsers([/\\\\]|$)"
+      ],
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "icon": "assets/app-icon/icon.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "icon": "assets/app-icon/icon.png",
+      "target": [
+        "AppImage"
+      ]
+    }
+  }
+}

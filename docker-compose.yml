@@ -1,0 +1,12 @@
+services:
+  webpilot:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.local
+    environment:
+      - BROWSER_HEADLESS=true
+    volumes:
+      - ./agent_runs:/app/agent_runs
+      - ./agent_threads:/app/agent_threads

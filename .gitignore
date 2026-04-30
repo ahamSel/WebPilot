@@ -1,0 +1,64 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+/desktop_dist
+/.desktop-dev-data
+/.playwright-browsers
+
+# misc
+.DS_Store
+*.pem
+firebase-debug.log
+/agent_runs
+/playbooks
+/skill_graph
+/route_reviews
+/e2e_reports
+/readiness_reports
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# Playwright MCP
+/.playwright-mcp
+
+# Benchmark reports
+/benchmark_reports
+
+# Agent threads
+/agent_threads
+
+# Screenshots (testing)
+/screenshots

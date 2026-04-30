@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+agent_runs
+playbooks
+skill_graph
+route_reviews
+e2e_reports
+readiness_reports
+.env.local
+.env
+.DS_Store
