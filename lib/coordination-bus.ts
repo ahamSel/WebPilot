@@ -51,6 +51,7 @@ export function createCoordinationBus(): CoordinationBus {
         },
 
         cancelAgent(label: string, reason: string) {
+            void reason;
             cancelled.add(label);
             const existing = progress.get(label);
             if (existing && existing.status === "running") {
@@ -61,8 +62,9 @@ export function createCoordinationBus(): CoordinationBus {
         },
 
         cancelAll(reason: string) {
+            void reason;
             allCancelled = true;
-            for (const [label, entry] of progress) {
+            for (const [, entry] of progress) {
                 if (entry.status === "running") {
                     entry.status = "cancelled";
                     entry.timestamp = new Date().toISOString();

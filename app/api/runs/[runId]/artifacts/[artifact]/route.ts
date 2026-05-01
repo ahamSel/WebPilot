@@ -14,7 +14,7 @@ export async function GET(
             return NextResponse.json({ error: "Artifact not found" }, { status: 404 });
         }
         return NextResponse.json({ artifact: artifactDetail });
-    } catch (e: any) {
-        return NextResponse.json({ error: e?.message || "Failed to load artifact" }, { status: 500 });
+    } catch (e: unknown) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Failed to load artifact" }, { status: 500 });
     }
 }

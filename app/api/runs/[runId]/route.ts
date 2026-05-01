@@ -14,7 +14,7 @@ export async function GET(
             return NextResponse.json({ error: "Run not found" }, { status: 404 });
         }
         return NextResponse.json({ run });
-    } catch (e: any) {
-        return NextResponse.json({ error: e?.message || "Failed to load run" }, { status: 500 });
+    } catch (e: unknown) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Failed to load run" }, { status: 500 });
     }
 }

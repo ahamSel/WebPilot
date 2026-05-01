@@ -245,9 +245,11 @@ export default function RunDetailPage() {
         };
     }, [runId]);
 
+    const runStatus = run?.status;
+
     useEffect(() => {
         if (!runId) return;
-        if (!run || !["running", "paused", "stopping"].includes(run.status)) return;
+        if (!runStatus || !["running", "paused", "stopping"].includes(runStatus)) return;
 
         const intervalId = window.setInterval(async () => {
             try {
@@ -259,7 +261,7 @@ export default function RunDetailPage() {
         }, 3000);
 
         return () => window.clearInterval(intervalId);
-    }, [runId, run?.status]);
+    }, [runId, runStatus]);
 
     useEffect(() => {
         if (!run?.artifacts?.length) {
