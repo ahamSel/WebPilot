@@ -51,7 +51,7 @@ export interface StepRecord {
     };
 }
 
-const RUN_ROOT = process.env.RUN_STORE_DIR || path.join(process.cwd(), "agent_runs");
+const RUN_ROOT = process.env.RUN_STORE_DIR || "agent_runs";
 
 async function ensureDir(dir: string) {
     await fs.mkdir(dir, { recursive: true });

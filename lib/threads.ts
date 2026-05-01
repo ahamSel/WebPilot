@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { listRuns, type RunSummary } from "./recorder";
 
-const THREAD_ROOT = process.env.THREAD_STORE_DIR || path.join(process.cwd(), "agent_threads");
+const THREAD_ROOT = process.env.THREAD_STORE_DIR || "agent_threads";
 const THREAD_HISTORY_LIMIT = 6;
 
 export interface ThreadSummary {
