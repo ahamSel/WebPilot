@@ -133,9 +133,10 @@ function shortErr(e: any): string {
     return msg.length > 600 ? msg.slice(0, 600) + "…" : msg;
 }
 
-function extractUrlFromGoal(goal: string): string {
-    const match = String(goal || "").match(/https?:\/\/[^\s"'`<>]+/i);
-    return match?.[0] || "";
+function extractUrlsFromGoal(goal: string): string[] {
+    return Array.from(String(goal || "").matchAll(/https?:\/\/[^\s"'`<>]+/gi))
+        .map((match) => match[0])
+        .filter(Boolean);
 }
 
 function goalNeedsEvidence(goal: string): boolean {
@@ -789,11 +790,18 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 await saveTextArtifact(runCtx, "thread_context.txt", plannerThreadContext);
             }
             await ensureMcpReady(browserSettings);
+            const goalUrls = extractUrlsFromGoal(userGoal);
+            const goalUrl = goalUrls[0] || "";
 
             // ================================================================
             // COORDINATOR: Check if goal can be parallelized
             // ================================================================
-            const parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
+            let parallelResult: ParallelResult | null = null;
+            if (goalUrls.length === 1) {
+                log("info", "coordinator_skipped", { reason: "single_explicit_url", url: goalUrl });
+            } else {
+                parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
+            }
             if (parallelResult) {
                 // Parallel execution handled everything
                 state.finalResult = parallelResult.result;
@@ -1194,7 +1202,6 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
 
             // Seed explicit URL goals before the first planner call.
             let initialObservation: Awaited<ReturnType<typeof tool_observe>> | null = null;
-            const goalUrl = extractUrlFromGoal(userGoal);
             if (goalUrl) {
                 try {
                     log("info", "goal_seed_navigation", { url: goalUrl });
