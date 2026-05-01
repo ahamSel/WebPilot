@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
         const limit = Number(req.nextUrl.searchParams.get("limit") || 20);
         const threads = await listThreads(limit);
         return NextResponse.json({ threads });
-    } catch (e: any) {
-        return NextResponse.json({ error: e?.message || "Failed to load threads" }, { status: 500 });
+    } catch (e: unknown) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Failed to load threads" }, { status: 500 });
     }
 }

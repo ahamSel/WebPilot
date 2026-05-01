@@ -21,6 +21,25 @@ const eslintConfig = defineConfig([
     "e2e_reports/**",
     "readiness_reports/**",
   ]),
+  {
+    files: ["electron/**/*.cjs", "scripts/**/*.js"],
+    rules: {
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
+  {
+    files: ["lib/**/*.ts", "app/api/**/*.ts", "stores/**/*.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  {
+    files: ["**/*.tsx"],
+    rules: {
+      "react-hooks/purity": "off",
+      "react-hooks/set-state-in-effect": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

@@ -112,7 +112,7 @@ export const state: AgentState = {
 };
 
 /** Multiple agents can be paused simultaneously — resume unblocks all of them */
-let pauseResolvers: Array<(value?: unknown) => void> = [];
+const pauseResolvers: Array<(value?: unknown) => void> = [];
 let runningPromise: Promise<void> | null = null;
 let runCtx: RunContext & { exports?: any[]; pauses?: any[]; urls?: Set<string>; heals?: any[] } | null = null;
 let activeBrowserRuntimeKey = "";
@@ -131,16 +131,6 @@ function nowIso() {
 function shortErr(e: any): string {
     const msg = e?.message || String(e);
     return msg.length > 600 ? msg.slice(0, 600) + "…" : msg;
-}
-
-function extractDomainFromGoal(goal: string): string {
-    const text = goal.trim();
-    if (!text) return "";
-    const urlLike = text.match(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?:[/:?#]|$)/i);
-    if (urlLike?.[1]) return urlLike[1].toLowerCase();
-    const hostLike = text.match(/\b([a-z0-9.-]+\.[a-z]{2,})\b/i);
-    if (hostLike?.[1]) return hostLike[1].toLowerCase();
-    return "";
 }
 
 function extractUrlFromGoal(goal: string): string {
@@ -637,7 +627,7 @@ IMPORTANT: When the user mentions specific websites, ALWAYS include those site n
 
     // Run all sub-agents in parallel!
     const subResults = await Promise.all(
-        subAgents.map((agent, i) => {
+        subAgents.map((agent) => {
             state.lastAction = `parallel: ${tasks.length} sub-agents running`;
             return agent.run().catch(e => ({
                 ok: false,

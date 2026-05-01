@@ -10,7 +10,7 @@
  * to run in true parallel (since those don't touch the browser).
  */
 
-import { callMcpTool, mcpText, parseSnapshot } from "./playwright-mcp-driver";
+import { callMcpTool } from "./playwright-mcp-driver";
 
 export class McpMutex {
     private queue: Promise<void> = Promise.resolve();

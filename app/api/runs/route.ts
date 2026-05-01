@@ -7,7 +7,7 @@ export async function GET() {
     try {
         const runs = await listRuns(30);
         return NextResponse.json({ runs });
-    } catch (e: any) {
-        return NextResponse.json({ error: e?.message || "Failed to list runs" }, { status: 500 });
+    } catch (e: unknown) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : "Failed to list runs" }, { status: 500 });
     }
 }
