@@ -6,6 +6,7 @@ const standaloneExcludes = [
   "agent_threads/**/*",
   "desktop_dist/**/*",
   ".desktop-dev-data/**/*",
+  ".playwright-browsers/**/*",
   ".playwright-mcp/**/*",
   "firebase-debug.log",
   "next.config.*",

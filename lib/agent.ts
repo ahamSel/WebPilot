@@ -1157,14 +1157,83 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 }
             };
 
+            const recordToolStep = async ({
+                name,
+                source,
+                args,
+                result,
+                durationMs,
+                preUrl,
+            }: {
+                name: string;
+                source: "llm" | "seed" | "direct";
+                args: Record<string, unknown>;
+                result: unknown;
+                durationMs?: number;
+                preUrl?: string;
+            }) => {
+                if (!runCtx) return;
+                const resultRecord = result && typeof result === "object"
+                    ? result as Record<string, unknown>
+                    : {};
+                const observationRecord = resultRecord.observation && typeof resultRecord.observation === "object"
+                    ? resultRecord.observation as Record<string, unknown>
+                    : {};
+                const snapshot = resultRecord.snapshot && typeof resultRecord.snapshot === "object"
+                    ? resultRecord.snapshot as Partial<NormalizedSnapshot>
+                    : observationRecord.snapshot && typeof observationRecord.snapshot === "object"
+                        ? observationRecord.snapshot as Partial<NormalizedSnapshot>
+                        : undefined;
+                const observationText = snapshot?.text ? String(snapshot.text).slice(0, 400) : undefined;
+                const stepError = typeof resultRecord.error === "string" ? resultRecord.error : undefined;
+                await recordStep(runCtx, {
+                    step: state.step,
+                    name,
+                    source,
+                    args,
+                    ok: resultRecord.ok === true,
+                    error: stepError,
+                    durationMs,
+                    observationSnippet: observationText?.slice(0, 400),
+                    preUrl,
+                    postUrl: snapshot?.url || (typeof resultRecord.url === "string" ? resultRecord.url : undefined),
+                    postTitle: snapshot?.title || (typeof resultRecord.title === "string" ? resultRecord.title : undefined),
+                    timestamp: nowIso(),
+                });
+            };
+
             // Seed explicit URL goals before the first planner call.
             let initialObservation: Awaited<ReturnType<typeof tool_observe>> | null = null;
             const goalUrl = extractUrlFromGoal(userGoal);
             if (goalUrl) {
                 try {
                     log("info", "goal_seed_navigation", { url: goalUrl });
-                    await tool_navigate({ url: goalUrl });
-                    initialObservation = await tool_observe({ maxTextChars: 2800, maxElements: 50 });
+                    state.step++;
+                    const navigatePreUrl = lastKnownUrl || undefined;
+                    const navigateStart = Date.now();
+                    const navigateResult = await tool_navigate({ url: goalUrl });
+                    await recordToolStep({
+                        name: "navigate",
+                        source: "seed",
+                        args: { url: goalUrl },
+                        result: navigateResult,
+                        durationMs: Date.now() - navigateStart,
+                        preUrl: navigatePreUrl,
+                    });
+
+                    state.step++;
+                    const observePreUrl = lastKnownUrl || undefined;
+                    const observeArgs = { maxTextChars: 2800, maxElements: 50 };
+                    const observeStart = Date.now();
+                    initialObservation = await tool_observe(observeArgs);
+                    await recordToolStep({
+                        name: "observe",
+                        source: "seed",
+                        args: observeArgs,
+                        result: initialObservation,
+                        durationMs: Date.now() - observeStart,
+                        preUrl: observePreUrl,
+                    });
                 } catch (e: any) {
                     log("warn", "goal_seed_navigation_failed", { error: shortErr(e) });
                 }
@@ -1362,6 +1431,15 @@ Tips:
                 if (!calls.length) {
                     const text = response.text;
                     if (text) {
+                        state.step++;
+                        await recordToolStep({
+                            name: "finish",
+                            source: "direct",
+                            args: { result: text },
+                            result: { ok: true, result: text },
+                            durationMs: 0,
+                            preUrl: lastKnownUrl || undefined,
+                        });
                         state.lastAction = "Thought: " + text.slice(0, 200);
                         log("info", "agent_thought", { thought: text.slice(0, 200) });
                     }
@@ -1389,25 +1467,16 @@ Tips:
                     const durationMs = Date.now() - stepStart;
 
                     // Persist step record to disk for run inspection.
-                    if (runCtx) {
-                        const stepError = result && "error" in result ? (result as any).error : undefined;
-                        const snapshot = (result as any)?.snapshot || (result as any)?.observation?.snapshot;
-                        const observationText = snapshot?.text ? String(snapshot.text).slice(0, 400) : undefined;
-                        await recordStep(runCtx, {
-                            step: state.step,
-                            name: call.name,
-                            source: "llm",
-                            args: call.args || {},
-                            ok: !!result?.ok,
-                            error: stepError,
-                            durationMs,
-                            observationSnippet: observationText?.slice(0, 400),
-                            preUrl,
-                            postUrl: snapshot?.url,
-                            postTitle: snapshot?.title,
-                            timestamp: nowIso(),
-                        });
+                    await recordToolStep({
+                        name: call.name,
+                        source: "llm",
+                        args: call.args || {},
+                        result,
+                        durationMs,
+                        preUrl,
+                    });
 
+                    if (runCtx) {
                         if (CAPTURE_ARTIFACTS) {
                             // Save DOM snapshot via browser_evaluate
                             try {

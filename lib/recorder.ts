@@ -32,8 +32,8 @@ export interface RunMetadata {
 export interface StepRecord {
     step: number;
     name: string;
-    source?: "llm";
-    args: any;
+    source?: "llm" | "seed" | "direct";
+    args: unknown;
     ok: boolean;
     error?: string;
     durationMs?: number;

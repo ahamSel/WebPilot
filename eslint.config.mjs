@@ -12,6 +12,14 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "desktop_dist/**",
+    ".desktop-dev-data/**",
+    ".playwright-browsers/**",
+    ".playwright-mcp/**",
+    "agent_runs/**",
+    "agent_threads/**",
+    "e2e_reports/**",
+    "readiness_reports/**",
   ]),
 ]);
 
