@@ -8,6 +8,8 @@ const standaloneExcludes = [
   ".desktop-dev-data/**/*",
   ".playwright-mcp/**/*",
   "firebase-debug.log",
+  "next.config.*",
+  "package-lock.json",
   "*.md",
   "Dockerfile",
   "tsconfig.tsbuildinfo",
