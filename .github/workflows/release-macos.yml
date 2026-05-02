@@ -175,43 +175,37 @@ jobs:
           asset="${{ steps.assets.outputs.asset_path }}"
           sha_file="${{ steps.assets.outputs.sha_path }}"
 
-          prerelease_args=()
-          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
-            prerelease_args+=(--prerelease)
-          fi
-
-          draft_args=()
-          latest_args=()
-          if [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
-            draft_args+=(--draft)
-          else
-            latest_args=(--latest=false)
-            if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
-              latest_args=(--latest)
-            fi
-          fi
-
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$asset" "$sha_file" --clobber
-            edit_args=(--title "WebPilot $tag" --notes-file release-notes.md)
-            if [[ "${{ steps.release.outputs.draft }}" != "true" ]]; then
-              edit_args+=(--draft=false)
-              if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
-                edit_args+=(--latest)
-              fi
-            fi
             if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
-              edit_args+=(--prerelease)
+              if [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
+                gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md --prerelease
+              elif [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+                gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md --draft=false --latest --prerelease
+              else
+                gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md --draft=false --prerelease
+              fi
+            elif [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
+              gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md
+            elif [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+              gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md --draft=false --latest
+            else
+              gh release edit "$tag" --title "WebPilot $tag" --notes-file release-notes.md --draft=false
             fi
-            gh release edit "$tag" "${edit_args[@]}"
           else
-            gh release create "$tag" \
-              "$asset#$(basename "$asset")" \
-              "$sha_file#$(basename "$sha_file")" \
-              --verify-tag \
-              --title "WebPilot $tag" \
-              --notes-file release-notes.md \
-              "${draft_args[@]}" \
-              "${latest_args[@]}" \
-              "${prerelease_args[@]}"
+            if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+              if [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
+                gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --draft --prerelease
+              elif [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+                gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --latest --prerelease
+              else
+                gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --latest=false --prerelease
+              fi
+            elif [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
+              gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --draft
+            elif [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+              gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --latest
+            else
+              gh release create "$tag" "$asset#$(basename "$asset")" "$sha_file#$(basename "$sha_file")" --verify-tag --title "WebPilot $tag" --notes-file release-notes.md --latest=false
+            fi
           fi
