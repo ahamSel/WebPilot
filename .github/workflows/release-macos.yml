@@ -1,0 +1,177 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, for example v0.1.1"
+        required: true
+        type: string
+      latest:
+        description: "Mark this release as latest"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark this release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-macos-${{ github.ref }}-${{ inputs.tag || '' }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish macOS release
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Resolve release settings
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+            latest="${{ inputs.latest }}"
+            prerelease="${{ inputs.prerelease }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+            latest="true"
+            prerelease="false"
+          fi
+
+          if [[ ! "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v0.1.1 or v0.1.1-beta.1; got '$tag'." >&2
+            exit 1
+          fi
+
+          version="${tag#v}"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "$version" != "$package_version" ]]; then
+            echo "Tag $tag does not match package.json version $package_version." >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build unsigned macOS app
+        run: npm run desktop:build
+
+      - name: Prepare release assets
+        id: assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t dmgs < <(find desktop_dist -maxdepth 1 -type f -name "*.dmg" | sort)
+          if [[ "${#dmgs[@]}" -ne 1 ]]; then
+            printf "Expected exactly one DMG in desktop_dist, found %s:\n" "${#dmgs[@]}" >&2
+            printf "%s\n" "${dmgs[@]:-}" >&2
+            exit 1
+          fi
+
+          asset="${dmgs[0]}"
+          asset_name="$(basename "$asset")"
+          sha="$(shasum -a 256 "$asset" | awk '{print $1}')"
+          sha_file="${asset}.sha256"
+          printf "%s  %s\n" "$sha" "$asset_name" > "$sha_file"
+
+          cat > release-notes.md <<EOF
+          ## WebPilot ${{ steps.release.outputs.tag }}
+
+          Unsigned macOS alpha build.
+
+          ### Artifact
+
+          - $asset_name
+          - SHA-256: $sha
+
+          macOS may show a normal security warning because this alpha build is not notarized yet.
+          EOF
+
+          echo "asset_path=$asset" >> "$GITHUB_OUTPUT"
+          echo "asset_name=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "sha_path=$sha_file" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WebPilot-macOS-${{ steps.release.outputs.tag }}
+          path: |
+            ${{ steps.assets.outputs.asset_path }}
+            ${{ steps.assets.outputs.sha_path }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.release.outputs.tag }}"
+          asset="${{ steps.assets.outputs.asset_path }}"
+          sha_file="${{ steps.assets.outputs.sha_path }}"
+
+          prerelease_args=()
+          if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          latest_args=(--latest=false)
+          if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+            latest_args=(--latest)
+          fi
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$asset" "$sha_file" --clobber
+            edit_args=(--title "WebPilot $tag" --notes-file release-notes.md)
+            if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+              edit_args+=(--latest)
+            fi
+            if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
+              edit_args+=(--prerelease)
+            fi
+            gh release edit "$tag" "${edit_args[@]}"
+          else
+            gh release create "$tag" \
+              "$asset#$(basename "$asset")" \
+              "$sha_file#$(basename "$sha_file")" \
+              --target "$GITHUB_SHA" \
+              --verify-tag \
+              --title "WebPilot $tag" \
+              --notes-file release-notes.md \
+              "${latest_args[@]}" \
+              "${prerelease_args[@]}"
+          fi
