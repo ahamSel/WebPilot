@@ -18,13 +18,29 @@ function formatDuration(startedAt?: string, finishedAt?: string): string {
 
 export function ChatView() {
   const agentState = useAgentStore((s) => s.state);
+  const runs = useAgentStore((s) => s.runs);
   const activeThread = useThreadStore((s) => s.activeThread);
+  const activeThreadId = useThreadStore((s) => s.activeThreadId);
+  const fetchActiveThread = useThreadStore((s) => s.fetchActiveThread);
+  const fetchThreads = useThreadStore((s) => s.fetchThreads);
   const displayMode = useUIStore((s) => s.displayMode);
   const toggleDisplayMode = useUIStore((s) => s.toggleDisplayMode);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const status = agentState?.status || "idle";
   const isActive = status === "running" || status === "paused";
+  const liveThreadId = agentState?.threadId || null;
+  const liveRunId = agentState?.runDir?.split(/[\\/]/).pop() || null;
+  const completedLiveBelongsToActiveThread =
+    !!activeThreadId && !!liveThreadId && activeThreadId === liveThreadId;
+  const showCompletedLiveRun =
+    completedLiveBelongsToActiveThread &&
+    (status === "done" || status === "stopped" || status === "error") &&
+    !!agentState &&
+    (!!agentState.finalResult || !!agentState.lastError);
+  const visibleThreadRuns = (activeThread?.runs || []).filter((run) => {
+    return !showCompletedLiveRun || !liveRunId || run.runId !== liveRunId;
+  });
 
   // Auto-scroll to bottom when new steps arrive
   useEffect(() => {
@@ -32,6 +48,12 @@ export function ChatView() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [agentState?.step, isActive]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
+    fetchActiveThread();
+    fetchThreads();
+  }, [activeThreadId, agentState?.finishedAt, runs.length, fetchActiveThread, fetchThreads]);
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -70,7 +92,7 @@ export function ChatView() {
       {/* Chat area */}
       <div ref={scrollRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4 space-y-4">
         {/* Prior thread turns */}
-        {activeThread?.runs?.map((run) => (
+        {visibleThreadRuns.map((run) => (
           <div key={run.runId} className="space-y-3">
             <ChatMessage role="user" content={run.userGoal || run.goal} />
             <ChatMessage
@@ -102,7 +124,7 @@ export function ChatView() {
         )}
 
         {/* Completed current run */}
-        {(status === "done" || status === "stopped") && agentState && agentState.finalResult && (
+        {showCompletedLiveRun && (
           <div className="space-y-3">
             {agentState.currentGoal && (
               <ChatMessage role="user" content={agentState.currentGoal} />
@@ -111,7 +133,7 @@ export function ChatView() {
               role="agent"
               status={status}
               stepCount={agentState.step}
-              content={agentState.finalResult}
+              content={agentState.finalResult || undefined}
               error={agentState.lastError || undefined}
               duration={formatDuration(agentState.startedAt, agentState.finishedAt)}
             />
@@ -119,7 +141,7 @@ export function ChatView() {
         )}
 
         {/* Empty state */}
-        {!isActive && !agentState?.finalResult && !activeThread?.runs?.length && (
+        {!isActive && !showCompletedLiveRun && !visibleThreadRuns.length && (
           <div className="flex items-center justify-center h-full text-wp-text-secondary text-sm">
             What would you like to do?
           </div>
