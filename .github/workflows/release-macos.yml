@@ -122,14 +122,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t dmgs < <(find desktop_dist -maxdepth 1 -type f -name "*.dmg" | sort)
-          if [[ "${#dmgs[@]}" -ne 1 ]]; then
-            printf "Expected exactly one DMG in desktop_dist, found %s:\n" "${#dmgs[@]}" >&2
-            printf "%s\n" "${dmgs[@]:-}" >&2
+          dmgs_file="$(mktemp)"
+          find desktop_dist -maxdepth 1 -type f -name "*.dmg" | sort > "$dmgs_file"
+          dmg_count="$(wc -l < "$dmgs_file" | tr -d ' ')"
+          if [[ "$dmg_count" -ne 1 ]]; then
+            printf "Expected exactly one DMG in desktop_dist, found %s:\n" "$dmg_count" >&2
+            sed -n '1,20p' "$dmgs_file" >&2
             exit 1
           fi
 
-          asset="${dmgs[0]}"
+          asset="$(sed -n '1p' "$dmgs_file")"
           asset_name="$(basename "$asset")"
           sha="$(shasum -a 256 "$asset" | awk '{print $1}')"
           sha_file="${asset}.sha256"
