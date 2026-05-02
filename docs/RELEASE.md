@@ -35,6 +35,13 @@ Verify:
 
 ## Build
 
+Automated macOS release:
+
+1. Bump `package.json` and `package-lock.json` to the next version.
+2. Merge the version bump to `main`.
+3. Push a matching tag, for example `v0.1.1`.
+4. The `Release macOS` workflow builds the unsigned DMG, computes SHA-256, uploads workflow artifacts, and publishes the GitHub Release.
+
 Unsigned/ad-hoc macOS build:
 
 ```bash
@@ -55,7 +62,7 @@ Include:
 
 - platform status: macOS alpha
 - Windows/Linux status: planned, packaging configured but not yet validated
-- supported providers: Gemini, OpenAI, OpenAI-compatible, Ollama
+- supported providers: Gemini, OpenAI, Claude, OpenAI-compatible, Ollama
 - browser/profile support caveats
 - local data locations
 - security reporting link
