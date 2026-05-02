@@ -76,6 +76,12 @@ jobs:
             exit 1
           fi
 
+          lock_version="$(node -p "require('./package-lock.json').packages?.['']?.version || require('./package-lock.json').version || ''")"
+          if [[ "$version" != "$lock_version" ]]; then
+            echo "Tag $tag does not match package-lock.json version $lock_version." >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
