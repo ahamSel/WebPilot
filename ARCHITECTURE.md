@@ -50,6 +50,7 @@ The runtime provider abstraction keeps UI, API, and agent code independent of a 
 
 - Gemini via Google AI API key.
 - OpenAI via API key.
+- Claude via Anthropic API key.
 - OpenAI-compatible endpoints.
 - Ollama local runtime.
 

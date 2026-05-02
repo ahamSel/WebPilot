@@ -39,10 +39,11 @@ Required for cloud providers:
 
 - `GEMINI_API_KEY` for Gemini.
 - `MODEL_API_KEY` for OpenAI or compatible providers.
+- `ANTHROPIC_API_KEY` for Claude.
 
 Optional:
 
-- `MODEL_PROVIDER=gemini|openai|ollama`
+- `MODEL_PROVIDER=gemini|openai|anthropic|ollama`
 - `MODEL_BASE_URL=...`
 - `MODEL_NAV_MODEL=...`
 - `MODEL_SYNTH_MODEL=...`

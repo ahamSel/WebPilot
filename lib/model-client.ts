@@ -101,6 +101,16 @@ interface OpenAiChatMessage {
     tool_call_id?: string;
 }
 
+type AnthropicContentBlock =
+    | { type: "text"; text: string }
+    | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
+    | { type: "tool_result"; tool_use_id: string; content: string };
+
+interface AnthropicMessage {
+    role: "user" | "assistant";
+    content: string | AnthropicContentBlock[];
+}
+
 function boolFromInput(value: unknown, fallback: boolean): boolean {
     if (typeof value === "boolean") return value;
     if (typeof value === "string") {
@@ -133,6 +143,14 @@ function buildOpenAiCompatibleUrl(baseUrl: string): string {
     if (clean.endsWith("/chat/completions")) return clean;
     if (clean.endsWith("/v1")) return `${clean}/chat/completions`;
     return `${clean}/v1/chat/completions`;
+}
+
+function buildAnthropicUrl(baseUrl: string): string {
+    const clean = cleanBaseUrl(baseUrl);
+    if (!clean) return "";
+    if (clean.endsWith("/messages")) return clean;
+    if (clean.endsWith("/v1")) return `${clean}/messages`;
+    return `${clean}/v1/messages`;
 }
 
 function lowerCaseSchemaType(value: unknown): unknown {
@@ -237,6 +255,37 @@ async function postOpenAiCompatibleJson(
     if (!response.ok) {
         const text = await response.text().catch(() => "");
         throw new Error(`${config.provider} request failed (${response.status}): ${text.slice(0, 400)}`);
+    }
+
+    return await response.json();
+}
+
+async function postAnthropicJson(
+    config: RuntimeModelConfig,
+    body: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+    const url = buildAnthropicUrl(config.baseUrl);
+    if (!url) {
+        throw new Error("Missing base URL for Anthropic provider.");
+    }
+    if (!config.apiKey) {
+        throw new Error("Missing Anthropic API key.");
+    }
+
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "x-api-key": config.apiKey,
+            "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(config.timeoutMs),
+    });
+
+    if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(`Anthropic request failed (${response.status}): ${text.slice(0, 400)}`);
     }
 
     return await response.json();
@@ -407,6 +456,100 @@ class OpenAiCompatibleModelClient implements ModelClient {
     }
 }
 
+function extractAnthropicContentBlocks(response: Record<string, unknown>): AnthropicContentBlock[] {
+    const raw = Array.isArray(response.content) ? response.content as Array<Record<string, unknown>> : [];
+    return raw.flatMap((block): AnthropicContentBlock[] => {
+        if (block.type === "text" && typeof block.text === "string") {
+            return [{ type: "text", text: block.text }];
+        }
+        if (block.type === "tool_use" && typeof block.name === "string" && typeof block.id === "string") {
+            const input = block.input && typeof block.input === "object" && !Array.isArray(block.input)
+                ? block.input as Record<string, unknown>
+                : {};
+            return [{ type: "tool_use", id: block.id, name: block.name, input }];
+        }
+        return [];
+    });
+}
+
+function extractAnthropicText(blocks: AnthropicContentBlock[]): string {
+    return blocks
+        .filter((block): block is { type: "text"; text: string } => block.type === "text")
+        .map((block) => block.text)
+        .join("\n")
+        .trim();
+}
+
+class AnthropicToolChat implements ToolChat {
+    private messages: AnthropicMessage[] = [];
+    private tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
+    private pendingToolCalls: Array<{ id: string; name: string }> = [];
+
+    constructor(private config: RuntimeModelConfig, private options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
+        this.tools = options.tools.map((tool) => ({
+            name: tool.name,
+            description: tool.description,
+            input_schema: lowerCaseSchemaType(tool.parameters) as Record<string, unknown>,
+        }));
+    }
+
+    async sendMessage(message: string | ToolResponsePart[]): Promise<ToolChatResponse> {
+        if (typeof message === "string") {
+            this.messages.push({ role: "user", content: message });
+        } else {
+            const content: AnthropicContentBlock[] = [];
+            message.forEach((part, index) => {
+                const pending = this.pendingToolCalls[index];
+                if (!pending) return;
+                content.push({
+                    type: "tool_result",
+                    tool_use_id: pending.id,
+                    content: stringifyToolResult(part.functionResponse.response),
+                });
+            });
+            if (content.length) {
+                this.messages.push({ role: "user", content });
+            }
+        }
+
+        const response = await postAnthropicJson(this.config, {
+            model: this.options.model,
+            max_tokens: 4096,
+            system: this.options.systemInstruction,
+            messages: this.messages,
+            tools: this.tools,
+        });
+
+        const blocks = extractAnthropicContentBlocks(response);
+        const text = extractAnthropicText(blocks);
+        const functionCalls = blocks
+            .filter((block): block is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => block.type === "tool_use")
+            .map((block) => ({ id: block.id, name: block.name, args: block.input }));
+
+        this.messages.push({ role: "assistant", content: blocks });
+        this.pendingToolCalls = functionCalls.map((call) => ({ id: call.id || "", name: call.name }));
+        return { text, functionCalls };
+    }
+}
+
+class AnthropicModelClient implements ModelClient {
+    constructor(private config: RuntimeModelConfig) {}
+
+    createToolChat(options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }): ToolChat {
+        return new AnthropicToolChat(this.config, options);
+    }
+
+    async generateText(options: GenerateTextOptions): Promise<string> {
+        const response = await postAnthropicJson(this.config, {
+            model: options.model,
+            max_tokens: 4096,
+            system: options.systemInstruction,
+            messages: [{ role: "user", content: options.prompt }],
+        });
+        return extractAnthropicText(extractAnthropicContentBlocks(response));
+    }
+}
+
 export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {}): RuntimeModelConfig {
     const overrideProvider = optionalTrimmedString(overrides.provider);
     const overrideModel = optionalTrimmedString(overrides.model);
@@ -420,13 +563,17 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
         overrideProvider ||
         process.env.MODEL_PROVIDER ||
         process.env.OPENAI_COMPAT_PROVIDER ||
-        (process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? "openai-compatible" : "gemini")
+        process.env.ANTHROPIC_PROVIDER ||
+        (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_BASE_URL ? "anthropic" :
+            process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? "openai-compatible" : "gemini")
     );
     const providerDefaults = defaultModelsForProvider(provider);
 
     const model = String(
         overrideModel ||
         process.env.MODEL_MODEL ||
+        process.env.ANTHROPIC_MODEL ||
+        process.env.CLAUDE_MODEL ||
         process.env.GEMINI_MODEL ||
         providerDefaults.navModel
     ).trim();
@@ -434,6 +581,8 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
     const navModel = String(
         overrideNavModel ||
         process.env.MODEL_NAV_MODEL ||
+        process.env.ANTHROPIC_NAV_MODEL ||
+        process.env.CLAUDE_NAV_MODEL ||
         process.env.GEMINI_NAV_MODEL ||
         model
     ).trim();
@@ -441,6 +590,8 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
     const synthModel = String(
         overrideSynthModel ||
         process.env.MODEL_SYNTH_MODEL ||
+        process.env.ANTHROPIC_SYNTH_MODEL ||
+        process.env.CLAUDE_SYNTH_MODEL ||
         process.env.GEMINI_SYNTH_MODEL ||
         providerDefaults.synthModel ||
         navModel
@@ -449,6 +600,8 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
     const reviewModel = String(
         overrideReviewModel ||
         process.env.MODEL_REVIEW_MODEL ||
+        process.env.ANTHROPIC_REVIEW_MODEL ||
+        process.env.CLAUDE_REVIEW_MODEL ||
         process.env.GEMINI_REVIEW_MODEL ||
         providerDefaults.reviewModel ||
         synthModel
@@ -457,6 +610,8 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
     const apiKey = String(
         overrideApiKey ??
         process.env.MODEL_API_KEY ??
+        process.env.ANTHROPIC_API_KEY ??
+        process.env.CLAUDE_API_KEY ??
         process.env.OPENAI_COMPAT_API_KEY ??
         process.env.GEMINI_API_KEY ??
         process.env.GOOGLE_API_KEY ??
@@ -466,6 +621,7 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
     const baseUrl = cleanBaseUrl(
         overrideBaseUrl ??
         process.env.MODEL_BASE_URL ??
+        process.env.ANTHROPIC_BASE_URL ??
         process.env.OPENAI_COMPAT_BASE_URL ??
         defaultBaseUrlForProvider(provider)
     );
@@ -481,12 +637,16 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
         synthEnabled: boolFromInput(
             overrides.synthEnabled ??
             process.env.MODEL_SYNTH_ENABLED ??
+            process.env.ANTHROPIC_SYNTH_ENABLED ??
+            process.env.CLAUDE_SYNTH_ENABLED ??
             process.env.GEMINI_SYNTH_ENABLED,
             true
         ),
         timeoutMs: toTimeoutMs(
             overrides.timeoutMs ??
             process.env.MODEL_TIMEOUT_MS ??
+            process.env.ANTHROPIC_TIMEOUT_MS ??
+            process.env.CLAUDE_TIMEOUT_MS ??
             process.env.GEMINI_TIMEOUT_MS,
             120000
         ),
@@ -513,10 +673,16 @@ export function hasRuntimeCredentials(config: RuntimeModelConfig): boolean {
     if (config.provider === "openai") {
         return !!config.apiKey;
     }
+    if (config.provider === "anthropic") {
+        return !!config.apiKey;
+    }
     return !!config.baseUrl;
 }
 
 export function createModelClient(config: RuntimeModelConfig): ModelClient {
+    if (config.provider === "anthropic") {
+        return new AnthropicModelClient(config);
+    }
     if (config.provider === "openai" || config.provider === "ollama") {
         return new OpenAiCompatibleModelClient(config);
     }

@@ -1,4 +1,4 @@
-export type ModelProvider = "gemini" | "openai" | "ollama";
+export type ModelProvider = "gemini" | "openai" | "anthropic" | "ollama";
 
 export interface ModelOption {
   value: string;
@@ -35,6 +35,7 @@ export interface OllamaDiscoveryResult {
 
 export const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
+export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags";
 const OLLAMA_SHOW_URL = "http://127.0.0.1:11434/api/show";
 
@@ -46,6 +47,9 @@ const OPENAI_CHEAP = "gpt-5-nano";
 const OPENAI_SMART = "gpt-5.2";
 const OPENAI_STABLE_FAST = "gpt-4.1-mini";
 const OPENAI_STABLE_SMART = "gpt-4.1";
+const CLAUDE_FAST = "claude-haiku-4-5-20251001";
+const CLAUDE_BALANCED = "claude-sonnet-4-6";
+const CLAUDE_SMART = "claude-opus-4-7";
 
 export const PROVIDER_PRESETS: Record<ModelProvider, ProviderPreset> = {
   gemini: {
@@ -100,6 +104,32 @@ export const PROVIDER_PRESETS: Record<ModelProvider, ProviderPreset> = {
       { value: OPENAI_SMART, label: "GPT-5.2", description: "Best quality review." },
     ],
   },
+  anthropic: {
+    id: "anthropic",
+    label: "Claude",
+    apiKeyLabel: "Anthropic API key",
+    apiKeyPlaceholder: "sk-ant-...",
+    apiKeyRequired: true,
+    notes: [
+      "Claude uses Anthropic's Messages API with native tool use.",
+      "Haiku 4.5 is the fast planner default; Sonnet 4.6 is the stronger synthesis/review default.",
+    ],
+    navModels: [
+      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast, lower-cost planner for interactive browsing." },
+      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "Best default for complex agentic tasks." },
+      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Strongest reasoning option." },
+    ],
+    synthModels: [
+      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast synthesis." },
+      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "High-quality synthesis." },
+      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Best quality synthesis." },
+    ],
+    reviewModels: [
+      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast route review." },
+      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "Thorough route review." },
+      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Deepest review." },
+    ],
+  },
   ollama: {
     id: "ollama",
     label: "Ollama",
@@ -117,13 +147,16 @@ export const PROVIDER_PRESETS: Record<ModelProvider, ProviderPreset> = {
 };
 
 export function providerOrder(): ModelProvider[] {
-  return ["gemini", "openai", "ollama"];
+  return ["gemini", "openai", "anthropic", "ollama"];
 }
 
 export function normalizeProvider(value: unknown): ModelProvider {
   const normalized = String(value || "").trim().toLowerCase();
   if (normalized === "openai" || normalized === "openai-compatible" || normalized === "openai_compatible") {
     return "openai";
+  }
+  if (normalized === "anthropic" || normalized === "claude") {
+    return "anthropic";
   }
   if (normalized === "ollama") {
     return "ollama";
@@ -138,6 +171,7 @@ export function providerLabel(provider: unknown): string {
 export function defaultBaseUrlForProvider(provider: unknown): string {
   const normalized = normalizeProvider(provider);
   if (normalized === "openai") return OPENAI_BASE_URL;
+  if (normalized === "anthropic") return ANTHROPIC_BASE_URL;
   if (normalized === "ollama") return OLLAMA_BASE_URL;
   return "";
 }
@@ -156,6 +190,13 @@ export function defaultModelsForProvider(provider: unknown) {
       navModel: OPENAI_FAST,
       synthModel: OPENAI_SMART,
       reviewModel: OPENAI_SMART,
+    };
+  }
+  if (normalized === "anthropic") {
+    return {
+      navModel: CLAUDE_FAST,
+      synthModel: CLAUDE_BALANCED,
+      reviewModel: CLAUDE_BALANCED,
     };
   }
   return {
