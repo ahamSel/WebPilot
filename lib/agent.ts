@@ -133,168 +133,14 @@ function shortErr(e: any): string {
     return msg.length > 600 ? msg.slice(0, 600) + "…" : msg;
 }
 
-function extractUrlsFromGoal(goal: string): string[] {
+function extractExplicitUrls(goal: string): string[] {
     return Array.from(String(goal || "").matchAll(/https?:\/\/[^\s"'`<>]+/gi))
         .map((match) => match[0])
         .filter(Boolean);
 }
 
-const DOMAIN_PATTERN = /\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|co|ca|dev|app|edu|gov|news|shop|site|me)\b/gi;
-const SOURCE_STOP_WORDS = new Set([
-    "a",
-    "an",
-    "and",
-    "anything",
-    "browser",
-    "for",
-    "from",
-    "in",
-    "me",
-    "my",
-    "of",
-    "on",
-    "or",
-    "site",
-    "the",
-    "to",
-    "with",
-]);
-
-function extractMentionedSources(goal: string): string[] {
-    const text = String(goal || "").toLowerCase();
-    const sources = new Set<string>();
-
-    for (const url of extractUrlsFromGoal(text)) {
-        try {
-            sources.add(new URL(url).hostname.replace(/^www\./, ""));
-        } catch {
-            // Ignore malformed URLs. The planner will handle them later.
-        }
-    }
-
-    for (const match of text.matchAll(DOMAIN_PATTERN)) {
-        sources.add(match[0].replace(/^www\./, ""));
-    }
-
-    for (const match of text.matchAll(/\b(?:at|check|compare|consider|from|go to|on|search|use|using|via)\s+([a-z][a-z0-9-]{2,})(?:\.[a-z]{2,})?\b/g)) {
-        const source = match[1];
-        if (!SOURCE_STOP_WORDS.has(source)) sources.add(source);
-    }
-
-    return Array.from(sources);
-}
-
-function shouldAnalyzeForParallelExecution(goal: string, goalUrls: string[]): { analyze: boolean; reason?: string } {
-    if (goalUrls.length === 1) return { analyze: false, reason: "single_explicit_url" };
-    if (goalUrls.length > 1) return { analyze: true };
-
-    const normalized = String(goal || "").trim().toLowerCase();
-    const words = normalized.split(/\s+/).filter(Boolean);
-    const sources = extractMentionedSources(normalized);
-
-    if (sources.length > 1) return { analyze: true };
-    if (sources.length <= 1 && words.length < 12) return { analyze: false, reason: "simple_goal" };
-
-    const comparisonIntent = /\b(compare|comparison|versus|vs\.?|both|separately|in parallel|across|different sites?|multiple sites?|sources?)\b/.test(normalized);
-    if (!comparisonIntent) return { analyze: false, reason: "no_multi_source_signal" };
-
-    return { analyze: sources.length > 1, reason: sources.length > 1 ? undefined : "single_or_unknown_source" };
-}
-
-function goalNeedsEvidence(goal: string): boolean {
-    return /(due|deadline|assignment|instructions?|what(?:'s| is)? it about|details?|course)/i.test(goal || "");
-}
-
-function containsSpeculation(text: string): boolean {
-    return /\b(likely|most probable|probably|appears to|potentially|might|may be|not directly visible|assume|guess)\b/i.test(text || "");
-}
-
-function normCompare(text: string): string {
-    return String(text || "")
-        .replace(/[\u2018\u2019]/g, "'")
-        .replace(/[\u201C\u201D]/g, "\"")
-        .replace(/\s+/g, " ")
-        .trim()
-        .toLowerCase();
-}
-
-function evidenceSentenceCandidates(snapshot: any): string[] {
-    const evidence = snapshot?.evidence || {};
-    const keyLines = Array.isArray(evidence.keyLines) ? evidence.keyLines : [];
-    const instructionBlocks = Array.isArray(evidence.instructionBlocks) ? evidence.instructionBlocks : [];
-    const out: string[] = [];
-
-    for (const line of keyLines) {
-        const s = String(line || "").trim();
-        if (s.length >= 24) out.push(s);
-    }
-    for (const block of instructionBlocks) {
-        const chunk = String(block || "");
-        const sentences = chunk
-            .split(/(?<=[.!?])\s+/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-        for (const sentence of sentences) {
-            if (sentence.length >= 40 && sentence.length <= 360) out.push(sentence);
-        }
-    }
-
-    const uniq = new Set<string>();
-    const deduped: string[] = [];
-    for (const raw of out) {
-        const key = normCompare(raw);
-        if (!key || uniq.has(key)) continue;
-        uniq.add(key);
-        deduped.push(raw);
-    }
-    return deduped.slice(0, 80);
-}
-
-function validateEvidenceBackedResult(result: string, snapshot: any): {
-    ok: boolean;
-    reasons: string[];
-    matchedDueMention?: string;
-    matchedQuote?: string;
-    hasEvidence: boolean;
-} {
-    const evidence = snapshot?.evidence || {};
-    const dueMentions: string[] = Array.isArray(evidence.dueMentions)
-        ? evidence.dueMentions.map((s: any) => String(s || "").trim()).filter(Boolean)
-        : [];
-    const candidates: string[] = evidenceSentenceCandidates(snapshot);
-    const hasEvidence = dueMentions.length > 0 || candidates.length > 0;
-
-    const resultNorm = normCompare(result);
-    const reasons: string[] = [];
-
-    let matchedDueMention: string | undefined;
-    if (dueMentions.length) {
-        matchedDueMention = dueMentions.find((d: string) => resultNorm.includes(normCompare(d)));
-        if (!matchedDueMention) {
-            reasons.push("Include the exact due date/time string as seen in page evidence.");
-        }
-    }
-
-    let matchedQuote: string | undefined;
-    if (candidates.length) {
-        const sorted = [...candidates].sort((a, b) => b.length - a.length);
-        matchedQuote = sorted.find((c: string) => resultNorm.includes(normCompare(c)));
-        if (!matchedQuote) {
-            reasons.push("Include at least one exact sentence from the observed instructions in quotes.");
-        }
-    }
-
-    if (!hasEvidence) {
-        reasons.push("No page evidence captured yet. Observe the assignment/instructions page before finishing.");
-    }
-
-    return {
-        ok: reasons.length === 0,
-        reasons,
-        matchedDueMention,
-        matchedQuote,
-        hasEvidence,
-    };
+function extractJsonObject(text: string): string | null {
+    return text.match(/\{[\s\S]*\}/)?.[0] || null;
 }
 
 // Timeout wrapper for async operations
@@ -587,6 +433,104 @@ interface ParallelResult {
     runDirs: string[];
 }
 
+interface FinishReviewDecision {
+    accept: boolean;
+    reason: string;
+    retryInstruction: string;
+}
+
+async function reviewFinishResult(
+    goal: string,
+    result: string,
+    snapshot: NormalizedSnapshot | null,
+    modelConfig: RuntimeModelConfig,
+    plannerContext: string = ""
+): Promise<FinishReviewDecision> {
+    if (!hasRuntimeCredentials(modelConfig)) {
+        return { accept: true, reason: "No runtime credentials available for review.", retryInstruction: "" };
+    }
+
+    const modelClient = createModelClient(modelConfig);
+    const snapshotContext = snapshot
+        ? {
+            url: snapshot.url,
+            title: snapshot.title,
+            evidence: snapshot.evidence,
+            pageTextExcerpt: String(snapshot.text || "").slice(0, 15000),
+        }
+        : null;
+
+    log("info", "finish_review_starting", { model: modelConfig.reviewModel });
+    const reviewStart = Date.now();
+
+    let reviewText = "";
+    try {
+        reviewText = await withTimeout(
+            modelClient.generateText({
+                model: modelConfig.reviewModel,
+                systemInstruction: (
+                    "You are a browser-agent completion reviewer. Decide whether the proposed final answer "
+                    + "should be accepted or sent back to the browsing agent. Infer task requirements from the "
+                    + "full user goal, conversation context, proposed answer, and observed page context. "
+                    + "Do not rely on surface keywords alone. Return JSON only."
+                ),
+                prompt: `Review this proposed browser-agent completion.
+
+User goal:
+${goal}
+
+${plannerContext ? `Conversation context:\n${plannerContext}\n\n` : ""}Proposed final answer:
+${result}
+
+Latest observed browser context:
+${JSON.stringify(snapshotContext, null, 2)}
+
+Decision rules:
+- Accept if the answer satisfies the user goal or if no browser evidence is required.
+- Reject only when the answer is unsupported by observed browser context, speculative, missing an action the user requested, or should clearly gather more page evidence first.
+- If rejecting, write retry_instruction as a concrete instruction for the browsing agent's next step.
+
+Respond with ONLY valid JSON:
+{"accept": true/false, "reason": "short reason", "retry_instruction": "instruction for the browsing agent if rejected"}`,
+                thinkingBudget: 1024,
+            }),
+            modelConfig.timeoutMs,
+            "Finish review call"
+        );
+    } catch (e: any) {
+        log("warn", "finish_review_failed", { error: shortErr(e) });
+        return { accept: true, reason: "Finish review failed; accepting planner result.", retryInstruction: "" };
+    }
+
+    log("info", "finish_review_complete", { durationMs: Date.now() - reviewStart, response: reviewText.slice(0, 300) });
+
+    const jsonText = extractJsonObject(reviewText);
+    if (!jsonText) {
+        log("warn", "finish_review_parse_failed", { text: reviewText.slice(0, 200) });
+        return { accept: true, reason: "Finish review did not return JSON; accepting planner result.", retryInstruction: "" };
+    }
+
+    try {
+        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+        const accept = typeof parsed.accept === "boolean"
+            ? parsed.accept
+            : String(parsed.accept).trim().toLowerCase() !== "false";
+        const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+        const retryInstruction = typeof parsed.retry_instruction === "string"
+            ? parsed.retry_instruction.trim()
+            : "";
+
+        return {
+            accept,
+            reason,
+            retryInstruction,
+        };
+    } catch {
+        log("warn", "finish_review_parse_failed", { text: reviewText.slice(0, 200) });
+        return { accept: true, reason: "Finish review JSON was invalid; accepting planner result.", retryInstruction: "" };
+    }
+}
+
 async function tryParallelExecution(
     goal: string,
     parentRunCtx: RunContext & { exports?: any[]; pauses?: any[]; urls?: Set<string>; heals?: any[] },
@@ -598,7 +542,7 @@ async function tryParallelExecution(
 
     const modelClient = createModelClient(modelConfig);
 
-    // Ask Flash to analyze the goal for parallelization
+    // Ask the selected navigation model to decide whether the task should split.
     log("info", "coordinator_analyzing", { goal: goal.slice(0, 100) });
     const splitStart = Date.now();
 
@@ -628,7 +572,7 @@ Examples:
 
 IMPORTANT: When the user mentions specific websites, ALWAYS include those site names in the sub-task goal (e.g. "Go to kijiji.ca and find..." not just "find..."). The sub-agents navigate to the sites mentioned in their goals.`,
             }),
-            15000,
+            modelConfig.timeoutMs,
             "Coordinator split analysis"
         );
     } catch (e: any) {
@@ -641,9 +585,9 @@ IMPORTANT: When the user mentions specific websites, ALWAYS include those site n
     // Parse the JSON response
     let splitData: { parallel: boolean; tasks: Array<{ goal: string; site: string }> };
     try {
-        const jsonMatch = splitText.match(/\{[\s\S]*\}/);
-        if (!jsonMatch) return null;
-        splitData = JSON.parse(jsonMatch[0]);
+        const jsonText = extractJsonObject(splitText);
+        if (!jsonText) return null;
+        splitData = JSON.parse(jsonText);
     } catch {
         log("warn", "coordinator_split_parse_failed", { text: splitText.slice(0, 200) });
         return null;
@@ -854,19 +798,14 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 await saveTextArtifact(runCtx, "thread_context.txt", plannerThreadContext);
             }
             await ensureMcpReady(browserSettings);
-            const goalUrls = extractUrlsFromGoal(userGoal);
-            const goalUrl = goalUrls[0] || "";
+            const explicitGoalUrls = extractExplicitUrls(userGoal);
+            const goalUrl = explicitGoalUrls[0] || "";
 
             // ================================================================
-            // COORDINATOR: Check if goal can be parallelized
+            // COORDINATOR: LLM decides whether goal can be parallelized
             // ================================================================
             let parallelResult: ParallelResult | null = null;
-            const coordinatorDecision = shouldAnalyzeForParallelExecution(userGoal, goalUrls);
-            if (!coordinatorDecision.analyze) {
-                log("debug", "coordinator_skipped", { reason: coordinatorDecision.reason, url: goalUrl || undefined });
-            } else {
-                parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
-            }
+            parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
             if (parallelResult) {
                 // Parallel execution handled everything
                 state.finalResult = parallelResult.result;
@@ -1126,35 +1065,32 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             };
 
             // ================================================================
-            // TOOL: FINISH (unchanged — no browser interaction)
+            // TOOL: FINISH
             // ================================================================
             const tool_finish = async ({ result }: { result: string }) => {
-                if (goalNeedsEvidence(userGoal)) {
-                    if (containsSpeculation(result)) {
-                        const msg = "Final answer appears speculative. Re-check assignment instructions and due details from observed page evidence, then finish with only direct facts.";
-                        log("warn", "finish_rejected_speculation", { resultPreview: String(result || "").slice(0, 240) });
-                        return { ok: false, error: msg };
-                    }
-
-                    const evidenceCheck = validateEvidenceBackedResult(result, latestObservationSnapshot);
-                    if (runCtx) {
-                        await saveTextArtifact(runCtx, `step${state.step}_finish_evidence_check.json`, JSON.stringify({
-                            checkedAt: nowIso(),
-                            resultPreview: String(result || "").slice(0, 600),
-                            observationUrl: latestObservationSnapshot?.url || null,
-                            ...evidenceCheck,
-                        }, null, 2));
-                    }
-                    if (!evidenceCheck.ok) {
-                        log("warn", "finish_rejected_evidence_requirements", {
-                            reasons: evidenceCheck.reasons,
-                            observationUrl: latestObservationSnapshot?.url || null,
-                        });
-                        return {
-                            ok: false,
-                            error: `Final answer lacks direct evidence. ${evidenceCheck.reasons.join(" ")}`,
-                        };
-                    }
+                const review = await reviewFinishResult(
+                    userGoal,
+                    result,
+                    latestObservationSnapshot,
+                    modelConfig,
+                    plannerThreadContext
+                );
+                if (runCtx) {
+                    await saveTextArtifact(runCtx, `step${state.step}_finish_review.json`, JSON.stringify({
+                        checkedAt: nowIso(),
+                        resultPreview: String(result || "").slice(0, 600),
+                        observationUrl: latestObservationSnapshot?.url || null,
+                        ...review,
+                    }, null, 2));
+                }
+                if (!review.accept) {
+                    const msg = review.retryInstruction || review.reason || "Review rejected the final answer. Gather more evidence, then finish again.";
+                    log("warn", "finish_rejected_by_review", {
+                        reason: review.reason,
+                        retryInstruction: review.retryInstruction,
+                        resultPreview: String(result || "").slice(0, 240),
+                    });
+                    return { ok: false, error: msg };
                 }
                 log("info", "finish", { resultLength: result.length });
 
