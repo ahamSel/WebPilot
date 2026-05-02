@@ -32,6 +32,19 @@ npm run desktop:dev
 
 For normal app usage, configure model providers, API keys, base URLs, and browser/profile behavior from the in-app Settings screen. A `.env.local` file is optional and mainly useful for development, server-side defaults, CLI runs, or automation scripts.
 
+## macOS Install Note
+
+WebPilot alpha builds are currently unsigned and not notarized. macOS may show "Apple could not verify WebPilot is free of malware."
+
+To open the app:
+
+1. Open WebPilot once and click Done if macOS blocks it.
+2. Go to System Settings > Privacy & Security.
+3. Scroll down and click Open Anyway for WebPilot.
+4. Confirm, then open WebPilot again.
+
+Only do this after downloading WebPilot from the official GitHub release and verifying the SHA-256 checksum shown in the release notes.
+
 ## Model Setup In The App
 
 Open Settings, choose a provider, enter the provider key or local endpoint, choose a model, and save. The runtime settings UI supports Gemini, OpenAI, Claude, OpenAI-compatible endpoints, and Ollama.
