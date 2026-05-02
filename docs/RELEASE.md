@@ -40,7 +40,10 @@ Automated macOS release:
 1. Bump `package.json` and `package-lock.json` to the next version.
 2. Merge the version bump to `main`.
 3. Push a matching tag, for example `v0.1.1`.
-4. The `Release macOS` workflow builds the unsigned DMG, computes SHA-256, uploads workflow artifacts, and publishes the GitHub Release.
+4. The `Release macOS` workflow builds the unsigned DMG, computes SHA-256, uploads workflow artifacts, and creates a draft GitHub Release.
+5. Review the generated notes/assets, edit the notes if needed, then publish the draft release manually.
+
+The workflow can also be run manually from GitHub Actions against an existing tag. Keep `draft=true` unless you intentionally want the run to publish the release immediately.
 
 Unsigned/ad-hoc macOS build:
 

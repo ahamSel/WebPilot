@@ -20,6 +20,11 @@ on:
         required: true
         default: false
         type: boolean
+      draft:
+        description: "Create or keep the release as a draft for owner review"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -37,10 +42,18 @@ jobs:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
     steps:
-      - name: Checkout
+      - name: Checkout pushed tag
+        if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Checkout requested tag
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -58,10 +71,12 @@ jobs:
             tag="${{ inputs.tag }}"
             latest="${{ inputs.latest }}"
             prerelease="${{ inputs.prerelease }}"
+            draft="${{ inputs.draft }}"
           else
             tag="${GITHUB_REF_NAME}"
             latest="true"
             prerelease="false"
+            draft="true"
           fi
 
           if [[ ! "$tag" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
@@ -82,10 +97,18 @@ jobs:
             exit 1
           fi
 
+          tag_commit="$(git rev-list -n 1 "$tag")"
+          head_commit="$(git rev-parse HEAD)"
+          if [[ "$tag_commit" != "$head_commit" ]]; then
+            echo "Checked-out commit $head_commit does not match $tag commit $tag_commit." >&2
+            exit 1
+          fi
+
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "latest=$latest" >> "$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -139,7 +162,7 @@ jobs:
             ${{ steps.assets.outputs.sha_path }}
           if-no-files-found: error
 
-      - name: Publish GitHub Release
+      - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -155,16 +178,25 @@ jobs:
             prerelease_args+=(--prerelease)
           fi
 
-          latest_args=(--latest=false)
-          if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
-            latest_args=(--latest)
+          draft_args=()
+          latest_args=()
+          if [[ "${{ steps.release.outputs.draft }}" == "true" ]]; then
+            draft_args+=(--draft)
+          else
+            latest_args=(--latest=false)
+            if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+              latest_args=(--latest)
+            fi
           fi
 
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$asset" "$sha_file" --clobber
             edit_args=(--title "WebPilot $tag" --notes-file release-notes.md)
-            if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
-              edit_args+=(--latest)
+            if [[ "${{ steps.release.outputs.draft }}" != "true" ]]; then
+              edit_args+=(--draft=false)
+              if [[ "${{ steps.release.outputs.latest }}" == "true" ]]; then
+                edit_args+=(--latest)
+              fi
             fi
             if [[ "${{ steps.release.outputs.prerelease }}" == "true" ]]; then
               edit_args+=(--prerelease)
@@ -174,10 +206,10 @@ jobs:
             gh release create "$tag" \
               "$asset#$(basename "$asset")" \
               "$sha_file#$(basename "$sha_file")" \
-              --target "$GITHUB_SHA" \
               --verify-tag \
               --title "WebPilot $tag" \
               --notes-file release-notes.md \
+              "${draft_args[@]}" \
               "${latest_args[@]}" \
               "${prerelease_args[@]}"
           fi
