@@ -52,6 +52,8 @@ export interface StepRecord {
 }
 
 const RUN_ROOT = process.env.RUN_STORE_DIR || "agent_runs";
+const STALE_RUNNING_AFTER_MS = Number(process.env.RUN_STALE_AFTER_MS || 6 * 60 * 60 * 1000);
+const INTERRUPTED_RUN_MESSAGE = "Run did not finish before WebPilot shut down or restarted.";
 
 async function ensureDir(dir: string) {
     await fs.mkdir(dir, { recursive: true });
@@ -234,6 +236,25 @@ function sanitizePerformance(value: unknown) {
     );
 }
 
+function isStaleRunningRun(meta: Record<string, unknown>) {
+    if (meta.status !== "running") return false;
+    if (!STALE_RUNNING_AFTER_MS || STALE_RUNNING_AFTER_MS < 0) return false;
+    const startedAt = typeof meta.startedAt === "string" ? new Date(meta.startedAt).getTime() : NaN;
+    if (!Number.isFinite(startedAt)) return false;
+    return Date.now() - startedAt > STALE_RUNNING_AFTER_MS;
+}
+
+function normalizedRunFields(meta: Record<string, unknown>) {
+    const stale = isStaleRunningRun(meta);
+    const startedAt = typeof meta.startedAt === "string" ? meta.startedAt : "";
+    return {
+        status: stale ? "stopped" : String(meta.status || "unknown"),
+        finishedAt: stale && !meta.finishedAt ? startedAt : meta.finishedAt as string | undefined,
+        durationMs: stale && typeof meta.durationMs !== "number" ? 0 : meta.durationMs as number | undefined,
+        lastError: stale && !meta.lastError ? INTERRUPTED_RUN_MESSAGE : meta.lastError as string | undefined,
+    };
+}
+
 const PUBLIC_LOG_ACTIONS = new Set([
     "agent_error",
     "agent_finished",
@@ -402,21 +423,22 @@ export async function listRuns(limit: number = 20, options: ListRunsOptions = {}
         if (!raw) continue;
         try {
             const meta = JSON.parse(raw);
+            const normalized = normalizedRunFields(meta);
             if (options.threadId && meta.threadId !== options.threadId) continue;
             metas.push({
                 runId: meta.runId || entry,
                 goal: meta.goal || "",
-                status: meta.status || "unknown",
+                status: normalized.status,
                 startedAt: meta.startedAt,
-                finishedAt: meta.finishedAt,
-                durationMs: meta.durationMs,
+                finishedAt: normalized.finishedAt,
+                durationMs: normalized.durationMs,
                 finalResult: meta.finalResult,
                 runDir: path.join(RUN_ROOT, entry),
                 performance: sanitizePerformance(meta.performance),
                 threadId: meta.threadId,
                 threadTitle: meta.threadTitle,
                 userGoal: meta.userGoal,
-                lastError: meta.lastError,
+                lastError: normalized.lastError,
                 threadTurn: meta.threadTurn,
             });
         } catch {
@@ -433,6 +455,7 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
     const metaPath = path.join(runDir, "run.json");
     const meta = await readJsonFile<Record<string, unknown>>(metaPath);
     if (!meta) return null;
+    const normalized = normalizedRunFields(meta);
 
     const stepsRaw = await readTextFile(path.join(runDir, "steps.jsonl"));
     const steps = (stepsRaw || "")
@@ -461,10 +484,10 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
     return {
         runId: String(meta.runId || safeRunId),
         goal: String(meta.goal || ""),
-        status: String(meta.status || "unknown"),
+        status: normalized.status,
         startedAt: String(meta.startedAt || ""),
-        finishedAt: typeof meta.finishedAt === "string" ? meta.finishedAt : undefined,
-        durationMs: typeof meta.durationMs === "number" ? meta.durationMs : undefined,
+        finishedAt: typeof normalized.finishedAt === "string" ? normalized.finishedAt : undefined,
+        durationMs: typeof normalized.durationMs === "number" ? normalized.durationMs : undefined,
         finalResult: typeof meta.finalResult === "string" ? meta.finalResult : undefined,
         runDir,
         performance: sanitizePerformance(performance ?? meta.performance),
@@ -472,7 +495,7 @@ export async function getRunDetail(runId: string): Promise<RunDetail | null> {
         threadId: typeof meta.threadId === "string" ? meta.threadId : undefined,
         threadTitle: typeof meta.threadTitle === "string" ? meta.threadTitle : undefined,
         userGoal: typeof meta.userGoal === "string" ? meta.userGoal : undefined,
-        lastError: typeof meta.lastError === "string" ? meta.lastError : undefined,
+        lastError: typeof normalized.lastError === "string" ? normalized.lastError : undefined,
         threadTurn: typeof meta.threadTurn === "number" ? meta.threadTurn : undefined,
         model: typeof meta.model === "string" ? meta.model : undefined,
         plannerContext: typeof meta.plannerContext === "string" ? meta.plannerContext : undefined,

@@ -97,7 +97,8 @@ function ensureDefaultPlaywrightBrowsersPath() {
 async function getMcpCreateConnection() {
     ensureDefaultPlaywrightBrowsersPath();
     if (createMcpConnection) return createMcpConnection;
-    const mcpModule = await import("@playwright/mcp");
+    const appRequire = createRequire(path.join(process.cwd(), "package.json"));
+    const mcpModule = appRequire("@playwright/mcp") as typeof import("@playwright/mcp");
     createMcpConnection = mcpModule.createConnection;
     return createMcpConnection;
 }
