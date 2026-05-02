@@ -139,6 +139,68 @@ function extractUrlsFromGoal(goal: string): string[] {
         .filter(Boolean);
 }
 
+const DOMAIN_PATTERN = /\b(?:[a-z0-9-]+\.)+(?:com|org|net|io|ai|co|ca|dev|app|edu|gov|news|shop|site|me)\b/gi;
+const SOURCE_STOP_WORDS = new Set([
+    "a",
+    "an",
+    "and",
+    "anything",
+    "browser",
+    "for",
+    "from",
+    "in",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "site",
+    "the",
+    "to",
+    "with",
+]);
+
+function extractMentionedSources(goal: string): string[] {
+    const text = String(goal || "").toLowerCase();
+    const sources = new Set<string>();
+
+    for (const url of extractUrlsFromGoal(text)) {
+        try {
+            sources.add(new URL(url).hostname.replace(/^www\./, ""));
+        } catch {
+            // Ignore malformed URLs. The planner will handle them later.
+        }
+    }
+
+    for (const match of text.matchAll(DOMAIN_PATTERN)) {
+        sources.add(match[0].replace(/^www\./, ""));
+    }
+
+    for (const match of text.matchAll(/\b(?:at|check|compare|consider|from|go to|on|search|use|using|via)\s+([a-z][a-z0-9-]{2,})(?:\.[a-z]{2,})?\b/g)) {
+        const source = match[1];
+        if (!SOURCE_STOP_WORDS.has(source)) sources.add(source);
+    }
+
+    return Array.from(sources);
+}
+
+function shouldAnalyzeForParallelExecution(goal: string, goalUrls: string[]): { analyze: boolean; reason?: string } {
+    if (goalUrls.length === 1) return { analyze: false, reason: "single_explicit_url" };
+    if (goalUrls.length > 1) return { analyze: true };
+
+    const normalized = String(goal || "").trim().toLowerCase();
+    const words = normalized.split(/\s+/).filter(Boolean);
+    const sources = extractMentionedSources(normalized);
+
+    if (sources.length > 1) return { analyze: true };
+    if (sources.length <= 1 && words.length < 12) return { analyze: false, reason: "simple_goal" };
+
+    const comparisonIntent = /\b(compare|comparison|versus|vs\.?|both|separately|in parallel|across|different sites?|multiple sites?|sources?)\b/.test(normalized);
+    if (!comparisonIntent) return { analyze: false, reason: "no_multi_source_signal" };
+
+    return { analyze: sources.length > 1, reason: sources.length > 1 ? undefined : "single_or_unknown_source" };
+}
+
 function goalNeedsEvidence(goal: string): boolean {
     return /(due|deadline|assignment|instructions?|what(?:'s| is)? it about|details?|course)/i.test(goal || "");
 }
@@ -570,7 +632,7 @@ IMPORTANT: When the user mentions specific websites, ALWAYS include those site n
             "Coordinator split analysis"
         );
     } catch (e: any) {
-        log("warn", "coordinator_split_failed", { error: shortErr(e) });
+        log("debug", "coordinator_split_failed", { error: shortErr(e) });
         return null; // Fall back to sequential
     }
 
@@ -799,8 +861,9 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // COORDINATOR: Check if goal can be parallelized
             // ================================================================
             let parallelResult: ParallelResult | null = null;
-            if (goalUrls.length === 1) {
-                log("info", "coordinator_skipped", { reason: "single_explicit_url", url: goalUrl });
+            const coordinatorDecision = shouldAnalyzeForParallelExecution(userGoal, goalUrls);
+            if (!coordinatorDecision.analyze) {
+                log("debug", "coordinator_skipped", { reason: coordinatorDecision.reason, url: goalUrl || undefined });
             } else {
                 parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
             }

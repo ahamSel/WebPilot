@@ -15,9 +15,12 @@ interface UIStore {
   view: View;
   setView: (view: View) => void;
   displayMode: DisplayMode;
+  composerDraft: string;
   hydrate: () => void;
   setDisplayMode: (mode: DisplayMode) => void;
   toggleDisplayMode: () => void;
+  setComposerDraft: (draft: string) => void;
+  clearComposerDraft: () => void;
   toasts: Toast[];
   addToast: (message: string, type?: ToastType) => void;
   dismissToast: (id: string) => void;
@@ -35,6 +38,7 @@ export const useUIStore = create<UIStore>((set, get) => ({
   view: "home",
   setView: (view) => set({ view }),
   displayMode: "simple",
+  composerDraft: "",
   hydrate: () => {
     const stored = readDisplayMode();
     if (stored !== get().displayMode) {
@@ -49,6 +53,8 @@ export const useUIStore = create<UIStore>((set, get) => ({
     const next = get().displayMode === "simple" ? "detailed" : "simple";
     get().setDisplayMode(next);
   },
+  setComposerDraft: (draft) => set({ composerDraft: draft }),
+  clearComposerDraft: () => set({ composerDraft: "" }),
   toasts: [],
   addToast: (message, type = "info") => {
     const id = crypto.randomUUID();

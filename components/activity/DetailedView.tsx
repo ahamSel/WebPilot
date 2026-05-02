@@ -31,6 +31,7 @@ export function DetailedView() {
   const displayMode = useUIStore((s) => s.displayMode);
   const toggleDisplayMode = useUIStore((s) => s.toggleDisplayMode);
   const activeThread = useThreadStore((s) => s.activeThread);
+  const activeThreadId = useThreadStore((s) => s.activeThreadId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [historicalRun, setHistoricalRun] = useState<HistoricalRun | null>(null);
@@ -42,7 +43,12 @@ export function DetailedView() {
 
   const status = agentState?.status || "idle";
   const isActive = status === "running" || status === "paused";
-  const hasLiveData = isActive || status === "done" || status === "stopped";
+  const liveThreadId = agentState?.threadId || null;
+  const completedLiveBelongsToActiveThread =
+    !!activeThreadId && !!liveThreadId && activeThreadId === liveThreadId;
+  const hasLiveData =
+    isActive ||
+    (completedLiveBelongsToActiveThread && (status === "done" || status === "stopped" || status === "error"));
 
   // Fetch historical run when idle and a thread is selected
   const runs = activeThread?.runs;
