@@ -32,6 +32,8 @@ Verify:
 - a managed-browser run completes
 - activity and run detail load
 - no console errors in the main workflow
+- downloaded release DMG opens on macOS after the expected unsigned-app
+  Gatekeeper flow through System Settings > Privacy & Security > Open Anyway
 
 ## Build
 
@@ -64,6 +66,7 @@ Use the signed script only when the release machine is intentionally configured 
 Include:
 
 - platform status: macOS alpha
+- unsigned/not-notarized macOS install instructions
 - Windows/Linux status: planned, packaging configured but not yet validated
 - supported providers: Gemini, OpenAI, Claude, OpenAI-compatible, Ollama
 - browser/profile support caveats
