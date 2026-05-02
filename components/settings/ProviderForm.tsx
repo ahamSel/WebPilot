@@ -228,7 +228,7 @@ export function ProviderForm() {
     setRuntime((current) => ({
       ...current,
       provider: next,
-      apiKey: next === "ollama" ? "" : current.apiKey,
+      apiKey: next === current.provider ? current.apiKey : "",
       baseUrl: defaultBaseUrlForProvider(next),
       navModel: defaults.navModel,
       synthModel: defaults.synthModel,

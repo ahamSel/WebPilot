@@ -744,7 +744,9 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             ? "Missing Google AI API key."
             : modelConfig.provider === "openai"
                 ? "Missing OpenAI API key."
-                : "Missing Ollama runtime configuration.");
+                : modelConfig.provider === "anthropic"
+                    ? "Missing Anthropic API key."
+                    : "Missing Ollama runtime configuration.");
     }
     if (state.status === "running" || runningPromise) throw new Error("Already running");
 

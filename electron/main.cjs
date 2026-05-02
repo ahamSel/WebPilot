@@ -23,8 +23,10 @@ let desktopRuntimeFallbackWarned = false;
 
 const GEMINI_PROVIDER = "gemini";
 const OPENAI_PROVIDER = "openai";
+const ANTHROPIC_PROVIDER = "anthropic";
 const OLLAMA_PROVIDER = "ollama";
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
 const DESKTOP_COMMAND_CHANNEL = "desktop:app-command";
 
@@ -131,6 +133,9 @@ function normalizeProvider(value) {
     if (normalized === "openai" || normalized === "openai-compatible" || normalized === "openai_compatible") {
         return OPENAI_PROVIDER;
     }
+    if (normalized === "anthropic" || normalized === "claude") {
+        return ANTHROPIC_PROVIDER;
+    }
     if (normalized === "ollama") {
         return OLLAMA_PROVIDER;
     }
@@ -139,6 +144,7 @@ function normalizeProvider(value) {
 
 function defaultBaseUrlForProvider(provider) {
     if (provider === OPENAI_PROVIDER) return OPENAI_BASE_URL;
+    if (provider === ANTHROPIC_PROVIDER) return ANTHROPIC_BASE_URL;
     if (provider === OLLAMA_PROVIDER) return OLLAMA_BASE_URL;
     return "";
 }
@@ -156,6 +162,13 @@ function defaultModelsForProvider(provider) {
             navModel: "gpt-5-mini",
             synthModel: "gpt-5.2",
             reviewModel: "gpt-5.2",
+        };
+    }
+    if (provider === ANTHROPIC_PROVIDER) {
+        return {
+            navModel: "claude-haiku-4-5-20251001",
+            synthModel: "claude-sonnet-4-6",
+            reviewModel: "claude-sonnet-4-6",
         };
     }
     return {
@@ -651,24 +664,34 @@ function runtimeSettingsDefaults() {
     const provider = normalizeProvider(
         process.env.MODEL_PROVIDER ||
         process.env.OPENAI_COMPAT_PROVIDER ||
-        (process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? OPENAI_PROVIDER : GEMINI_PROVIDER)
+        process.env.ANTHROPIC_PROVIDER ||
+        (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_BASE_URL ? ANTHROPIC_PROVIDER :
+            process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? OPENAI_PROVIDER : GEMINI_PROVIDER)
     );
     const providerDefaults = defaultModelsForProvider(provider);
     const navModel = String(
         process.env.MODEL_NAV_MODEL ||
+        process.env.ANTHROPIC_NAV_MODEL ||
+        process.env.CLAUDE_NAV_MODEL ||
         process.env.GEMINI_NAV_MODEL ||
         process.env.MODEL_MODEL ||
+        process.env.ANTHROPIC_MODEL ||
+        process.env.CLAUDE_MODEL ||
         process.env.GEMINI_MODEL ||
         providerDefaults.navModel
     ).trim();
     const synthModel = String(
         process.env.MODEL_SYNTH_MODEL ||
+        process.env.ANTHROPIC_SYNTH_MODEL ||
+        process.env.CLAUDE_SYNTH_MODEL ||
         process.env.GEMINI_SYNTH_MODEL ||
         providerDefaults.synthModel ||
         navModel
     ).trim();
     const reviewModel = String(
         process.env.MODEL_REVIEW_MODEL ||
+        process.env.ANTHROPIC_REVIEW_MODEL ||
+        process.env.CLAUDE_REVIEW_MODEL ||
         process.env.GEMINI_REVIEW_MODEL ||
         providerDefaults.reviewModel ||
         synthModel
@@ -679,6 +702,7 @@ function runtimeSettingsDefaults() {
         apiKey: "",
         baseUrl: cleanBaseUrl(
             process.env.MODEL_BASE_URL ||
+            process.env.ANTHROPIC_BASE_URL ||
             process.env.OPENAI_COMPAT_BASE_URL ||
             defaultBaseUrlForProvider(provider)
         ),
@@ -686,7 +710,7 @@ function runtimeSettingsDefaults() {
         synthModel,
         reviewModel,
         synthEnabled: boolFromInput(
-            process.env.MODEL_SYNTH_ENABLED ?? process.env.GEMINI_SYNTH_ENABLED,
+            process.env.MODEL_SYNTH_ENABLED ?? process.env.ANTHROPIC_SYNTH_ENABLED ?? process.env.CLAUDE_SYNTH_ENABLED ?? process.env.GEMINI_SYNTH_ENABLED,
             true
         ),
         browser: sanitizeBrowserSettings(),

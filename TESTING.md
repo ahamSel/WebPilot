@@ -23,6 +23,7 @@ Then verify:
 curl -sS http://127.0.0.1:3000/api/agent
 curl -sS http://127.0.0.1:3000/api/runs
 curl -sS http://127.0.0.1:3000/api/threads
+curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=anthropic"
 curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=ollama"
 ```
 
