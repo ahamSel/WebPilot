@@ -1,6 +1,6 @@
 {
   "name": "web-pilot",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Open-source agentic browser with Playwright control, BYO model providers, local Ollama, and desktop packaging.",
   "license": "GPL-3.0-or-later",
   "author": "WebPilot Contributors",
