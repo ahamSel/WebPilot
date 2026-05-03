@@ -17,10 +17,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -40,6 +40,7 @@ jobs:
         run: |
           node -c scripts/agent-e2e.js
           node -c scripts/agent-runner.js
+          node -c scripts/desktop-smoke.mjs
           node -c scripts/health-check.js
           node -c scripts/mcp-cli.js
           node -c scripts/prepare-electron-build.mjs

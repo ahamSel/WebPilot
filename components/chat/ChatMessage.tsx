@@ -71,6 +71,7 @@ export function ChatMessage({
   const isError = !!error;
   const isPaused = status === "paused" || !!intervention;
   const isRunning = status === "running";
+  const runningLabel = (stepCount ?? 0) > 0 ? `${stepCount} steps completed` : "Planning request";
 
   return (
     <div className="flex min-w-0 flex-col items-start gap-1">
@@ -80,7 +81,7 @@ export function ChatMessage({
           <>
             <div className="flex min-w-0 items-center gap-2 text-xs text-wp-accent">
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-wp-accent animate-pulse" />
-              <span className="min-w-0 truncate">{stepCount ?? 0} steps completed</span>
+              <span className="min-w-0 truncate">{runningLabel}</span>
             </div>
             {recentSteps && recentSteps.length > 0 && (
               <div className="mt-1.5 flex min-w-0 flex-col gap-0.5">

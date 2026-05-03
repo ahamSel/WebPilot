@@ -2,13 +2,23 @@ const { app, BrowserWindow, Menu, clipboard, dialog, ipcMain, shell, utilityProc
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
+const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
 const { require: tsxRequire } = require("tsx/cjs/api");
 
-const DEFAULT_PORT = Number(process.env.ELECTRON_PORT || 3210);
+const REQUESTED_PORT = Number(process.env.ELECTRON_PORT || 3210);
+const DEFAULT_PORT = Number.isInteger(REQUESTED_PORT) && REQUESTED_PORT > 0 ? REQUESTED_PORT : 3210;
 const DEV_URL = process.env.ELECTRON_RENDERER_URL || "";
 const isDev = Boolean(DEV_URL);
+const USER_DATA_DIR_OVERRIDE = process.env.WEBPILOT_USER_DATA_DIR || "";
+let bundledServerPort = DEFAULT_PORT;
+
+if (USER_DATA_DIR_OVERRIDE) {
+    const userDataDir = path.resolve(USER_DATA_DIR_OVERRIDE);
+    fsSync.mkdirSync(userDataDir, { recursive: true });
+    app.setPath("userData", userDataDir);
+}
 
 const IS_MAC = process.platform === "darwin";
 const TRAFFIC_LIGHT_POSITION = { x: 14, y: 12 };
@@ -32,7 +42,7 @@ const DESKTOP_COMMAND_CHANNEL = "desktop:app-command";
 
 function rendererUrl() {
     if (DEV_URL) return DEV_URL;
-    return `http://127.0.0.1:${DEFAULT_PORT}`;
+    return `http://127.0.0.1:${bundledServerPort}`;
 }
 
 function routeUrl(routePath = "/") {
@@ -103,6 +113,27 @@ function waitForUrl(url, timeoutMs = 30000) {
 
         poll();
     });
+}
+
+function canListenOnPort(port) {
+    return new Promise((resolve) => {
+        const server = net.createServer();
+        server.once("error", () => resolve(false));
+        server.once("listening", () => {
+            server.close(() => resolve(true));
+        });
+        server.listen(port, "127.0.0.1");
+    });
+}
+
+async function chooseBundledServerPort() {
+    for (let offset = 0; offset < 50; offset += 1) {
+        const port = DEFAULT_PORT + offset;
+        if (await canListenOnPort(port)) {
+            return port;
+        }
+    }
+    throw new Error(`Could not find an available local port starting at ${DEFAULT_PORT}.`);
 }
 
 function standaloneServerPath() {
@@ -1113,12 +1144,13 @@ async function startBundledNextServer() {
     if (isDev || nextServerProcess) return;
 
     const serverPath = standaloneServerPath();
+    bundledServerPort = await chooseBundledServerPort();
     nextServerProcess = utilityProcess.fork(serverPath, [], {
         env: {
             ...process.env,
             ...resolvedDesktopDataEnv(),
             HOSTNAME: "127.0.0.1",
-            PORT: String(DEFAULT_PORT),
+            PORT: String(bundledServerPort),
         },
         serviceName: "webpilot-server",
     });
@@ -1131,6 +1163,27 @@ async function startBundledNextServer() {
     });
 
     await waitForUrl(rendererUrl(), 30000);
+}
+
+async function runDesktopSmokeAndQuit() {
+    try {
+        if (!isDev) {
+            await startBundledNextServer();
+        }
+        const runtime = runtimeLoadStatus();
+        const settings = await readDesktopRuntimeSettings();
+        console.log(`[webpilot:desktop-smoke] ${JSON.stringify({
+            platform: process.platform,
+            isPackaged: app.isPackaged,
+            rendererUrl: rendererUrl(),
+            runtimeTransport: runtime.transport,
+            runtimeError: runtime.error,
+            browser: settings.browser,
+        })}`);
+    } finally {
+        stopBundledNextServer();
+        app.quit();
+    }
 }
 
 async function createMainWindow() {
@@ -1360,6 +1413,11 @@ function stopBundledNextServer() {
 
 app.whenReady().then(async () => {
     applyDesktopRuntimeEnv();
+    if (process.env.WEBPILOT_DESKTOP_SMOKE === "1") {
+        await runDesktopSmokeAndQuit();
+        return;
+    }
+
     Menu.setApplicationMenu(buildApplicationMenu());
     ipcMain.handle("desktop:get-shell-info", () => {
         const runtime = runtimeLoadStatus();

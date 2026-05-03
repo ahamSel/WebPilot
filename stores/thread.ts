@@ -10,6 +10,7 @@ export interface ThreadSummary {
   createdAt: string;
   updatedAt: string;
   runCount: number;
+  lastRunId?: string;
   lastStatus?: string;
   lastUserGoal?: string;
   lastFinalResult?: string;
