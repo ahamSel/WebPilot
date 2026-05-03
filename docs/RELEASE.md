@@ -23,6 +23,13 @@ Run the desktop app:
 npm run desktop:dev
 ```
 
+Build and smoke-test the packaged app before tagging a release:
+
+```bash
+npm run desktop:build
+npm run desktop:smoke
+```
+
 Verify:
 
 - settings persist
@@ -34,6 +41,19 @@ Verify:
 - no console errors in the main workflow
 - downloaded release DMG opens on macOS after the expected unsigned-app
   Gatekeeper flow through System Settings > Privacy & Security > Open Anyway
+
+## Dev vs Release Parity
+
+`npm run dev` is useful for renderer and API iteration, but it is not the same runtime as the downloadable app. `npm run desktop:dev` adds the Electron shell, but still uses source files and project-local assets. A release DMG uses packaged Electron resources, compiled desktop runtime modules, bundled Playwright browsers, app `userData`, and may fall back to the bundled HTTP server if the direct runtime cannot load.
+
+The release workflow now runs `npm run desktop:smoke` after packaging. The smoke test launches `WebPilot.app` from `desktop_dist`, isolates app data with `WEBPILOT_USER_DATA_DIR`, and asserts:
+
+- the app is packaged
+- desktop runtime transport is `direct`, not HTTP fallback
+- packaged startup can move off the default local server port when another instance is using it
+- the packaged browser setting defaults to headed in a fresh profile
+
+This does not replace manual release QA. CI cannot reliably cover a user's real Chrome/Edge/Firefox profiles, macOS screen-recording permissions, Gatekeeper prompts on a downloaded quarantined DMG, provider API latency, third-party anti-bot behavior, or websites that change/rate-limit during an agent run.
 
 ## Build
 

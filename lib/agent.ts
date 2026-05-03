@@ -35,7 +35,6 @@ import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThread
 // Env vars
 const DEFAULT_CDP_HTTP = "http://127.0.0.1:9222";
 const CDP_HTTP = process.env.CDP_HTTP || DEFAULT_CDP_HTTP;
-const BROWSER_HEADLESS = (process.env.BROWSER_HEADLESS ?? "false") === "true";
 const MAX_STEPS = Number(process.env.MAX_STEPS || 160);
 const ALLOWED_DOMAINS = (process.env.ALLOWED_DOMAINS || "").split(",").map((s) => s.trim()).filter(Boolean);
 const CAPTURE_ARTIFACTS = (process.env.CAPTURE_ARTIFACTS ?? "1") === "1";
@@ -325,11 +324,11 @@ async function ensureMcpReady(browserSettings: BrowserRuntimeSettings) {
             browserName: browserSettings.browserName,
             channel: browserSettings.channel || undefined,
             mode: browserSettings.mode,
-            headless: browserSettings.headless || BROWSER_HEADLESS,
+            headless: browserSettings.headless,
         });
         await initPlaywrightMcp({
             browserName: browserSettings.browserName,
-            headless: browserSettings.headless || BROWSER_HEADLESS,
+            headless: browserSettings.headless,
             channel: browserSettings.mode === "channel" ? browserSettings.channel : "",
             userDataDir: browserSettings.userDataDir,
             executablePath: browserSettings.mode === "custom" ? browserSettings.executablePath : "",
@@ -452,19 +451,51 @@ interface FinishReviewDecision {
     retryInstruction: string;
 }
 
+function requestRouteFallback(reason: string): RequestRouteDecision {
+    return {
+        mode: "chat",
+        assistantReply: "I could not confidently decide whether this needs browser control. Please rephrase the task or include the website/action you want me to perform.",
+        reason,
+        browserGoal: "",
+    };
+}
+
+function parseRequestRouteDecision(rawText: string, goal: string): RequestRouteDecision {
+    const jsonText = extractJsonObject(rawText);
+    if (!jsonText) throw new Error("Router response did not contain a JSON object.");
+
+    const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Router payload must be a JSON object.");
+    }
+
+    const mode = parsed.mode === "chat" ? "chat" : parsed.mode === "browse" ? "browse" : null;
+    if (!mode) throw new Error("Router mode must be chat or browse.");
+
+    const assistantReply = typeof parsed.assistant_reply === "string" ? parsed.assistant_reply.trim() : "";
+    const browserGoal = typeof parsed.browser_goal === "string" && parsed.browser_goal.trim()
+        ? parsed.browser_goal.trim()
+        : goal;
+    const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+
+    if (mode === "chat" && !assistantReply) {
+        throw new Error("Router chat mode requires assistant_reply.");
+    }
+
+    return {
+        mode,
+        assistantReply,
+        browserGoal,
+        reason,
+    };
+}
+
 async function routeUserRequest(
     goal: string,
     modelConfig: RuntimeModelConfig,
     plannerContext: string = ""
 ): Promise<RequestRouteDecision> {
-    const fallback: RequestRouteDecision = {
-        mode: "browse",
-        assistantReply: "",
-        reason: "Router unavailable; using browser agent.",
-        browserGoal: goal,
-    };
-
-    if (!hasRuntimeCredentials(modelConfig)) return fallback;
+    if (!hasRuntimeCredentials(modelConfig)) return requestRouteFallback("Router unavailable.");
 
     const modelClient = createModelClient(modelConfig);
     log("info", "request_route_starting", { model: modelConfig.navModel });
@@ -501,33 +532,16 @@ Respond with ONLY valid JSON:
         );
     } catch (e: any) {
         log("warn", "request_route_failed", { error: shortErr(e), durationMs: Date.now() - routeStart });
-        return fallback;
+        return requestRouteFallback("Router call failed.");
     }
 
     log("info", "request_route_complete", { durationMs: Date.now() - routeStart, response: routeText.slice(0, 300) });
 
-    const jsonText = extractJsonObject(routeText);
-    if (!jsonText) return fallback;
-
     try {
-        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
-        const mode = parsed.mode === "chat" ? "chat" : "browse";
-        const assistantReply = typeof parsed.assistant_reply === "string" ? parsed.assistant_reply.trim() : "";
-        const browserGoal = typeof parsed.browser_goal === "string" && parsed.browser_goal.trim()
-            ? parsed.browser_goal.trim()
-            : goal;
-        const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
-
-        if (mode === "chat" && !assistantReply) return fallback;
-
-        return {
-            mode,
-            assistantReply,
-            browserGoal,
-            reason,
-        };
-    } catch {
-        return fallback;
+        return parseRequestRouteDecision(routeText, goal);
+    } catch (e: any) {
+        log("warn", "request_route_parse_failed", { error: shortErr(e), response: routeText.slice(0, 300) });
+        return requestRouteFallback("Router response was invalid.");
     }
 }
 
@@ -717,7 +731,7 @@ IMPORTANT: When the user mentions specific websites, ALWAYS include those site n
         goal: task.goal,
         runtime: modelConfig,
         label: `sub-${i}`,
-        headless: browserSettings.headless || BROWSER_HEADLESS,
+        headless: browserSettings.headless,
         browser: browserSettings,
         coordinationBus: bus,
         site: task.site,
@@ -867,6 +881,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             state.lastError = "";
             state.finalResult = "";
             state.intervention = "";
+            state.lastAction = "";
             state.startedAt = nowIso();
             state.finishedAt = null;
             state.stopRequested = false;

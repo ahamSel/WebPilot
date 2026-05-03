@@ -31,6 +31,8 @@ export function ChatView() {
   const isActive = status === "running" || status === "paused";
   const liveThreadId = agentState?.threadId || null;
   const liveRunId = agentState?.runDir?.split(/[\\/]/).pop() || null;
+  const activeThreadLastRunId = activeThread?.lastRunId || null;
+  const liveRunIds = new Set([liveRunId, activeThreadLastRunId].filter(Boolean));
   const liveBelongsToActiveThread =
     !!activeThreadId && !!liveThreadId && activeThreadId === liveThreadId;
   const showCompletedLiveRun =
@@ -40,10 +42,10 @@ export function ChatView() {
     (!!agentState.finalResult || !!agentState.lastError);
   const hidePersistedLiveRun =
     liveBelongsToActiveThread &&
-    !!liveRunId &&
+    liveRunIds.size > 0 &&
     (isActive || showCompletedLiveRun);
   const visibleThreadRuns = (activeThread?.runs || []).filter((run) => {
-    return !hidePersistedLiveRun || run.runId !== liveRunId;
+    return !hidePersistedLiveRun || !liveRunIds.has(run.runId);
   });
 
   // Auto-scroll to bottom when new steps arrive

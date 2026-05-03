@@ -23,6 +23,7 @@
     "desktop:dev": "node scripts/electron-dev.mjs",
     "desktop:start": "electron .",
     "desktop:build:prepare": "npm run build && npm run browsers:install && node scripts/prepare-electron-build.mjs",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:build": "npm run desktop:build:unsigned",
     "desktop:build:unsigned": "npm run desktop:build:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
     "desktop:build:signed": "npm run desktop:build:prepare && electron-builder"
