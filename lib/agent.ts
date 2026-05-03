@@ -187,6 +187,7 @@ function logDurationMs(entry: LogEntry): number {
 }
 
 function buildPerformanceSummary(logs: LogEntry[], stepCount: number, wallClockMs: number): PerformanceSummary {
+    const routeActions = new Set(["request_route_complete", "request_route_failed"]);
     const initialPlannerActions = new Set(["model_call_complete", "model_call_failed"]);
     const loopPlannerActions = new Set(["model_loop_call_complete", "model_loop_call_failed"]);
     const synthActions = new Set(["synth_complete", "synth_empty_fallback_to_flash", "coordinator_synth_complete"]);
@@ -203,6 +204,11 @@ function buildPerformanceSummary(logs: LogEntry[], stepCount: number, wallClockM
 
     for (const entry of logs) {
         const durationMs = logDurationMs(entry);
+        if (routeActions.has(entry.action)) {
+            llmCallCount += 1;
+            llmDurationMs += durationMs;
+            continue;
+        }
         if (initialPlannerActions.has(entry.action)) {
             llmCallCount += 1;
             initialPlannerCalls += 1;
@@ -433,10 +439,96 @@ interface ParallelResult {
     runDirs: string[];
 }
 
+interface RequestRouteDecision {
+    mode: "chat" | "browse";
+    assistantReply: string;
+    reason: string;
+    browserGoal: string;
+}
+
 interface FinishReviewDecision {
     accept: boolean;
     reason: string;
     retryInstruction: string;
+}
+
+async function routeUserRequest(
+    goal: string,
+    modelConfig: RuntimeModelConfig,
+    plannerContext: string = ""
+): Promise<RequestRouteDecision> {
+    const fallback: RequestRouteDecision = {
+        mode: "browse",
+        assistantReply: "",
+        reason: "Router unavailable; using browser agent.",
+        browserGoal: goal,
+    };
+
+    if (!hasRuntimeCredentials(modelConfig)) return fallback;
+
+    const modelClient = createModelClient(modelConfig);
+    log("info", "request_route_starting", { model: modelConfig.navModel });
+    const routeStart = Date.now();
+
+    let routeText = "";
+    try {
+        routeText = await withTimeout(
+            modelClient.generateText({
+                model: modelConfig.navModel,
+                systemInstruction: (
+                    "You are the first routing phase for an agentic browser. Decide whether the current "
+                    + "user message should be answered directly inside the app or handled by browser "
+                    + "automation. Infer intent from the full message and conversation context. Do not rely "
+                    + "on surface keywords alone. Return JSON only."
+                ),
+                prompt: `Route the current WebPilot request.
+
+Current user message:
+${goal}
+
+${plannerContext ? `Conversation context:\n${plannerContext}\n\n` : ""}Decision:
+- Use mode "chat" when the user is conversing with WebPilot, testing the app, asking for clarification, or when no live browser/page action is needed.
+- Use mode "browse" only when the request needs browser automation, live web/page state, navigation, form filling, clicking, extraction, comparison across websites, or interaction with a selected browser/profile.
+- If mode is "chat", write assistant_reply as the complete response to show the user.
+- If mode is "browse", write browser_goal as the task for the browser agent. Preserve the user's meaning without inventing extra search intent.
+
+Respond with ONLY valid JSON:
+{"mode": "chat|browse", "assistant_reply": "complete reply when mode is chat", "browser_goal": "browser task when mode is browse", "reason": "short routing reason"}`,
+                thinkingBudget: 512,
+            }),
+            modelConfig.timeoutMs,
+            "Request routing call"
+        );
+    } catch (e: any) {
+        log("warn", "request_route_failed", { error: shortErr(e), durationMs: Date.now() - routeStart });
+        return fallback;
+    }
+
+    log("info", "request_route_complete", { durationMs: Date.now() - routeStart, response: routeText.slice(0, 300) });
+
+    const jsonText = extractJsonObject(routeText);
+    if (!jsonText) return fallback;
+
+    try {
+        const parsed = JSON.parse(jsonText) as Record<string, unknown>;
+        const mode = parsed.mode === "chat" ? "chat" : "browse";
+        const assistantReply = typeof parsed.assistant_reply === "string" ? parsed.assistant_reply.trim() : "";
+        const browserGoal = typeof parsed.browser_goal === "string" && parsed.browser_goal.trim()
+            ? parsed.browser_goal.trim()
+            : goal;
+        const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : "";
+
+        if (mode === "chat" && !assistantReply) return fallback;
+
+        return {
+            mode,
+            assistantReply,
+            browserGoal,
+            reason,
+        };
+    } catch {
+        return fallback;
+    }
 }
 
 async function reviewFinishResult(
@@ -797,15 +889,34 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             if (runCtx && plannerThreadContext) {
                 await saveTextArtifact(runCtx, "thread_context.txt", plannerThreadContext);
             }
+            const routeDecision = await routeUserRequest(userGoal, modelConfig, plannerThreadContext);
+            if (runCtx) {
+                await saveTextArtifact(runCtx, "request_route.json", JSON.stringify({
+                    routedAt: nowIso(),
+                    ...routeDecision,
+                }, null, 2));
+            }
+            log("info", "request_routed", {
+                mode: routeDecision.mode,
+                reason: routeDecision.reason || undefined,
+            });
+            if (routeDecision.mode === "chat") {
+                state.finalResult = routeDecision.assistantReply;
+                state.lastAction = "direct_reply";
+                state.status = "done";
+                return;
+            }
+
+            const agentGoal = routeDecision.browserGoal || userGoal;
             await ensureMcpReady(browserSettings);
-            const explicitGoalUrls = extractExplicitUrls(userGoal);
+            const explicitGoalUrls = extractExplicitUrls(agentGoal);
             const goalUrl = explicitGoalUrls[0] || "";
 
             // ================================================================
             // COORDINATOR: LLM decides whether goal can be parallelized
             // ================================================================
             let parallelResult: ParallelResult | null = null;
-            parallelResult = await tryParallelExecution(userGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
+            parallelResult = await tryParallelExecution(agentGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
             if (parallelResult) {
                 // Parallel execution handled everything
                 state.finalResult = parallelResult.result;
@@ -1069,7 +1180,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // ================================================================
             const tool_finish = async ({ result }: { result: string }) => {
                 const review = await reviewFinishResult(
-                    userGoal,
+                    `Original user request:\n${userGoal}\n\nBrowser agent task:\n${agentGoal}`,
                     result,
                     latestObservationSnapshot,
                     modelConfig,
@@ -1106,7 +1217,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         const synthText = await withTimeout(
                             synthClient.generateText({
                                 model: modelConfig.synthModel,
-                                prompt: `The user's current request was:\n"${userGoal}"\n\n${plannerThreadContext ? `${plannerThreadContext}\n\n` : ""}A fast browsing agent visited ${pageSummaries.length} pages and produced this draft:\n${result}\n\nHere is the raw page content observed:\n${pagesContext.slice(0, 30000)}\n\nProduce a comprehensive, well-structured final answer. Include specific product names, prices, and links where available. Be concise but thorough. Do not add information that wasn't in the observed pages.`,
+                                prompt: `The user's current request was:\n"${userGoal}"\n\nThe browser agent task was:\n"${agentGoal}"\n\n${plannerThreadContext ? `${plannerThreadContext}\n\n` : ""}A fast browsing agent visited ${pageSummaries.length} pages and produced this draft:\n${result}\n\nHere is the raw page content observed:\n${pagesContext.slice(0, 30000)}\n\nProduce a comprehensive, well-structured final answer. Include specific product names, prices, and links where available. Be concise but thorough. Do not add information that wasn't in the observed pages.`,
                                 systemInstruction: "You are a research synthesizer.",
                                 thinkingBudget: 2048,
                             }),
@@ -1242,7 +1353,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // ================================================================
             const modelClient = createModelClient(modelConfig);
 
-            const SYSTEM = `You are a fast browser automation agent. Your current goal: ${userGoal}
+            const SYSTEM = `You are a fast browser automation agent. Your current goal: ${agentGoal}
 
 ${plannerThreadContext ? `${plannerThreadContext}\n\n` : ""}Available tools:
 - observe(): Get current page accessibility snapshot with elements identified by ref IDs, plus evidence
@@ -1276,7 +1387,8 @@ Tips:
 - Set clear:true when typing in fields that may have existing content`;
 
             log("info", "agent_starting", {
-                goal: userGoal,
+                goal: agentGoal,
+                userGoal,
                 provider: modelConfig.provider,
                 navModel: modelConfig.navModel,
                 synthModel: modelConfig.synthModel,
@@ -1408,7 +1520,7 @@ Tips:
                     : "";
                 response = await withTimeout(
                     chat.sendMessage(
-                        `Start.\nCurrent request: ${userGoal}\n${plannerThreadContext ? `${plannerThreadContext}\n` : ""}${initialObservationText}`
+                        `Start.\nCurrent request: ${agentGoal}\nOriginal user request: ${userGoal}\n${plannerThreadContext ? `${plannerThreadContext}\n` : ""}${initialObservationText}`
                     ),
                     modelConfig.timeoutMs,
                     "Initial planner call"

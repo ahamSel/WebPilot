@@ -31,15 +31,19 @@ export function ChatView() {
   const isActive = status === "running" || status === "paused";
   const liveThreadId = agentState?.threadId || null;
   const liveRunId = agentState?.runDir?.split(/[\\/]/).pop() || null;
-  const completedLiveBelongsToActiveThread =
+  const liveBelongsToActiveThread =
     !!activeThreadId && !!liveThreadId && activeThreadId === liveThreadId;
   const showCompletedLiveRun =
-    completedLiveBelongsToActiveThread &&
+    liveBelongsToActiveThread &&
     (status === "done" || status === "stopped" || status === "error") &&
     !!agentState &&
     (!!agentState.finalResult || !!agentState.lastError);
+  const hidePersistedLiveRun =
+    liveBelongsToActiveThread &&
+    !!liveRunId &&
+    (isActive || showCompletedLiveRun);
   const visibleThreadRuns = (activeThread?.runs || []).filter((run) => {
-    return !showCompletedLiveRun || !liveRunId || run.runId !== liveRunId;
+    return !hidePersistedLiveRun || run.runId !== liveRunId;
   });
 
   // Auto-scroll to bottom when new steps arrive
