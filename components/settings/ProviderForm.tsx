@@ -129,6 +129,7 @@ export function ProviderForm() {
   const discoveredBrowsers = browserDiscovery?.browsers || [];
   const browserChoice = currentBrowserChoice(runtime.browser, discoveredBrowsers);
   const storageMode = profileStorageSelection || profileStorageMode(runtime.browser, browserDiscovery?.defaultUserDataDir);
+  const canLaunchHeadless = runtime.browser.mode !== "cdp";
 
   useEffect(() => {
     getRuntimeSettingsClient()
@@ -494,6 +495,14 @@ export function ProviderForm() {
                 />
               </label>
             </div>
+          )}
+
+          {canLaunchHeadless && (
+            <Toggle
+              checked={runtime.browser.headless}
+              onChange={(checked) => updateBrowser({ headless: checked })}
+              label="Headless browser"
+            />
           )}
 
           {runtime.browser.mode !== "cdp" && (
