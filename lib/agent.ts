@@ -1254,6 +1254,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                     state.finalResult = result;
                 }
 
+                state.lastError = "";
                 state.status = "done";
                 requestStop();
                 return { ok: true };
@@ -1569,6 +1570,7 @@ Tips:
                         log("info", "agent_thought", { thought: text.slice(0, 200) });
                     }
                     state.finalResult = text || "No tool calls - agent finished thinking";
+                    state.lastError = "";
                     state.status = "done";
                     break;
                 }
@@ -1664,6 +1666,7 @@ Tips:
                 duration: finalDurationMs
             });
             state.performance = buildPerformanceSummary(state.logs, state.step, finalDurationMs);
+            const finalLastError = state.status === "error" ? state.lastError : "";
             if (runCtx) {
                 await saveTextArtifact(runCtx, "session_logs.json", JSON.stringify(state.logs, null, 2));
                 await saveTextArtifact(runCtx, "performance_summary.json", JSON.stringify(state.performance, null, 2));
@@ -1671,14 +1674,14 @@ Tips:
                     durationMs: finalDurationMs,
                     runtime: state.runtime,
                     performance: state.performance,
-                    lastError: state.lastError || undefined,
+                    lastError: finalLastError || undefined,
                 });
                 if (state.threadId) {
                     await updateThreadOnRunFinish(state.threadId, {
                         runId: runCtx.runId,
                         status: state.status,
                         userGoal,
-                        finalResult: state.finalResult || state.lastError,
+                        finalResult: state.finalResult || finalLastError,
                     });
                 }
             }
