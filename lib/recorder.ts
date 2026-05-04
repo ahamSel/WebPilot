@@ -246,12 +246,15 @@ function isStaleRunningRun(meta: Record<string, unknown>) {
 
 function normalizedRunFields(meta: Record<string, unknown>) {
     const stale = isStaleRunningRun(meta);
+    const status = stale ? "stopped" : String(meta.status || "unknown");
     const startedAt = typeof meta.startedAt === "string" ? meta.startedAt : "";
+    const finalResult = typeof meta.finalResult === "string" ? meta.finalResult.trim() : "";
+    const rawLastError = stale && !meta.lastError ? INTERRUPTED_RUN_MESSAGE : meta.lastError as string | undefined;
     return {
-        status: stale ? "stopped" : String(meta.status || "unknown"),
+        status,
         finishedAt: stale && !meta.finishedAt ? startedAt : meta.finishedAt as string | undefined,
         durationMs: stale && typeof meta.durationMs !== "number" ? 0 : meta.durationMs as number | undefined,
-        lastError: stale && !meta.lastError ? INTERRUPTED_RUN_MESSAGE : meta.lastError as string | undefined,
+        lastError: status === "done" && finalResult ? undefined : rawLastError,
     };
 }
 
