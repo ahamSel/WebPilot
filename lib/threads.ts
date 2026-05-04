@@ -43,6 +43,18 @@ function threadFile(threadId: string) {
     return path.join(threadDir(threadId), "thread.json");
 }
 
+export function normalizeThreadId(threadId: string): string {
+    const trimmed = String(threadId || "").trim();
+    if (!trimmed) {
+        throw new Error("threadId required");
+    }
+    const safe = path.basename(trimmed);
+    if (safe !== trimmed || !/^thread_[A-Za-z0-9_-]+$/.test(safe)) {
+        throw new Error("Invalid threadId");
+    }
+    return safe;
+}
+
 function compactText(value: string, max: number) {
     const text = String(value || "").replace(/\s+/g, " ").trim();
     if (!text) return "";
@@ -61,13 +73,67 @@ async function writeThread(summary: ThreadSummary) {
 
 export async function readThread(threadId: string): Promise<ThreadSummary | null> {
     if (!threadId) return null;
-    const raw = await fs.readFile(threadFile(threadId), "utf8").catch(() => null);
+    const safeThreadId = normalizeThreadId(threadId);
+    const raw = await fs.readFile(threadFile(safeThreadId), "utf8").catch(() => null);
     if (!raw) return null;
     try {
         return JSON.parse(raw) as ThreadSummary;
     } catch {
         return null;
     }
+}
+
+export async function deleteThreadRecord(threadId: string): Promise<{ threadId: string; deleted: boolean }> {
+    const safeThreadId = normalizeThreadId(threadId);
+    const dir = threadDir(safeThreadId);
+    const stats = await fs.stat(dir).catch(() => null);
+    await fs.rm(dir, { recursive: true, force: true });
+    return { threadId: safeThreadId, deleted: Boolean(stats) };
+}
+
+export async function deleteAllThreadRecords(): Promise<{ deletedThreads: number }> {
+    const entries = await fs.readdir(THREAD_ROOT).catch(() => []);
+    let deletedThreads = 0;
+    for (const entry of entries) {
+        let safeThreadId: string;
+        try {
+            safeThreadId = normalizeThreadId(entry);
+        } catch {
+            continue;
+        }
+        const dir = threadDir(safeThreadId);
+        const stats = await fs.stat(dir).catch(() => null);
+        if (!stats?.isDirectory()) continue;
+        await fs.rm(dir, { recursive: true, force: true });
+        deletedThreads += 1;
+    }
+    return { deletedThreads };
+}
+
+export async function reconcileThreadAfterRunDelete(threadId?: string): Promise<ThreadSummary | null> {
+    if (!threadId) return null;
+    const safeThreadId = normalizeThreadId(threadId);
+    const thread = await readThread(safeThreadId);
+    if (!thread) return null;
+
+    const runs = await listRuns(10_000, { threadId: safeThreadId });
+    if (runs.length === 0) {
+        await deleteThreadRecord(safeThreadId);
+        return null;
+    }
+
+    const latest = runs[0];
+    const next: ThreadSummary = {
+        ...thread,
+        updatedAt: latest.finishedAt || latest.startedAt || nowIso(),
+        runCount: runs.length,
+        lastRunId: latest.runId,
+        lastStatus: latest.status,
+        lastUserGoal: compactText(latest.userGoal || latest.goal || "", 240) || undefined,
+        lastFinalResult: compactText(latest.finalResult || "", 320) || undefined,
+    };
+    await writeThread(next);
+    return next;
 }
 
 export async function ensureThread(threadId: string | null | undefined, initialGoal: string): Promise<{ thread: ThreadSummary; created: boolean }> {
@@ -128,7 +194,7 @@ export async function listThreads(limit: number = 20): Promise<ThreadSummary[]> 
     const entries = await fs.readdir(THREAD_ROOT).catch(() => []);
     const threads: ThreadSummary[] = [];
     for (const entry of entries) {
-        const thread = await readThread(entry);
+        const thread = await readThread(entry).catch(() => null);
         if (thread) threads.push(thread);
     }
     threads.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));

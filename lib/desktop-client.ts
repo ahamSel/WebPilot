@@ -88,8 +88,11 @@ export interface DesktopBridge {
     listRuns: () => Promise<any>;
     getRun: (runId: string) => Promise<any>;
     getRunArtifact: (runId: string, artifactName: string) => Promise<any>;
+    deleteRun: (runId: string) => Promise<any>;
     listThreads: (limit?: number) => Promise<any>;
     getThread: (threadId: string) => Promise<any>;
+    deleteThread: (threadId: string) => Promise<any>;
+    clearHistory: () => Promise<any>;
     getSettings: () => Promise<{ runtime?: Partial<RuntimeSettings> }>;
     saveSettings: (payload: { runtime: RuntimeSettings }) => Promise<{ runtime?: Partial<RuntimeSettings> }>;
     listBrowsers: () => Promise<BrowserDiscoveryResult>;
@@ -202,6 +205,12 @@ export async function getRunArtifactClient(runId: string, artifactName: string) 
     return httpJson(`/api/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactName)}`);
 }
 
+export async function deleteRunClient(runId: string) {
+    const bridge = getDesktopBridge();
+    if (bridge) return bridge.deleteRun(runId);
+    return httpJson(`/api/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+}
+
 export async function listThreadsClient(limit?: number) {
     const bridge = getDesktopBridge();
     if (bridge) return bridge.listThreads(limit);
@@ -213,6 +222,18 @@ export async function getThreadClient(threadId: string) {
     const bridge = getDesktopBridge();
     if (bridge) return bridge.getThread(threadId);
     return httpJson(`/api/threads?threadId=${encodeURIComponent(threadId)}`);
+}
+
+export async function deleteThreadClient(threadId: string) {
+    const bridge = getDesktopBridge();
+    if (bridge) return bridge.deleteThread(threadId);
+    return httpJson(`/api/threads?threadId=${encodeURIComponent(threadId)}`, { method: "DELETE" });
+}
+
+export async function clearHistoryClient() {
+    const bridge = getDesktopBridge();
+    if (bridge) return bridge.clearHistory();
+    return httpJson("/api/history", { method: "DELETE" });
 }
 
 export async function copyTextClient(text: string) {

@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useAgentStore } from "@/stores/agent";
+import { useThreadStore } from "@/stores/thread";
 import { useUIStore } from "@/stores/ui";
 import { Card } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 import { RunList } from "./RunList";
 import { RunDetail } from "./RunDetail";
 import { postAgentActionClient } from "@/lib/desktop-client";
@@ -13,15 +15,39 @@ import { postAgentActionClient } from "@/lib/desktop-client";
 export function ActivityView() {
   const agentState = useAgentStore((s) => s.state);
   const runs = useAgentStore((s) => s.runs);
+  const deleteRun = useAgentStore((s) => s.deleteRun);
+  const fetchThreads = useThreadStore((s) => s.fetchThreads);
   const setView = useUIStore((s) => s.setView);
   const addToast = useUIStore((s) => s.addToast);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null);
+  const [pendingRunDelete, setPendingRunDelete] = useState<{ runId: string; label: string } | null>(null);
 
   const status = agentState?.status || "idle";
   const isActive = status === "running" || status === "paused";
 
   if (selectedRunId) {
-    return <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(null)} />;
+    return <RunDetail runId={selectedRunId} onBack={() => setSelectedRunId(null)} onDeleted={() => setSelectedRunId(null)} />;
+  }
+
+  function requestDeleteRun(runId: string) {
+    const run = runs.find((item) => item.runId === runId);
+    setPendingRunDelete({ runId, label: run?.userGoal || run?.goal || runId });
+  }
+
+  async function confirmDeleteRun() {
+    if (!pendingRunDelete) return;
+    setDeletingRunId(pendingRunDelete.runId);
+    try {
+      await deleteRun(pendingRunDelete.runId);
+      await fetchThreads();
+      addToast("Run deleted", "success");
+      setPendingRunDelete(null);
+    } catch (err) {
+      addToast(`Failed to delete run: ${err instanceof Error ? err.message : "unknown error"}`, "error");
+    } finally {
+      setDeletingRunId(null);
+    }
   }
 
   return (
@@ -61,12 +87,27 @@ export function ActivityView() {
             Recent Runs
           </h3>
           {runs.length > 0 ? (
-            <RunList runs={runs} onSelect={setSelectedRunId} />
+            <RunList
+              runs={runs}
+              onSelect={setSelectedRunId}
+              onDelete={requestDeleteRun}
+              deletingRunId={deletingRunId}
+            />
           ) : (
             <p className="text-sm text-wp-text-secondary">No runs yet.</p>
           )}
         </div>
       </div>
+
+      <ConfirmDialog
+        open={Boolean(pendingRunDelete)}
+        title="Delete Run"
+        message={`Delete this run and its saved artifacts? Settings, browser profiles, and opt-in cache data are not affected. ${pendingRunDelete?.label || ""}`}
+        confirmLabel="Delete"
+        busy={Boolean(deletingRunId)}
+        onConfirm={confirmDeleteRun}
+        onCancel={() => setPendingRunDelete(null)}
+      />
     </div>
   );
 }

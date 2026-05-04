@@ -113,6 +113,7 @@ try {
   assert(result?.isPackaged === true, "Packaged smoke must launch the packaged Electron app.", result);
   assert(result?.runtimeTransport === "direct", "Packaged app must use the direct desktop runtime, not HTTP fallback.", result);
   assert(!result?.runtimeError, "Packaged app reported a desktop runtime load error.", result);
+  assert(result?.historyLoaded === true, "Packaged app must include direct history deletion runtime methods.", result);
   assert(
     result?.browser?.headless === false,
     "Default packaged browser setting must be headed.",

@@ -70,6 +70,7 @@ async function compileDesktopRuntimeModules() {
     entryPoints: {
       agent: path.join(rootDir, "lib", "agent.ts"),
       recorder: path.join(rootDir, "lib", "recorder.ts"),
+      history: path.join(rootDir, "lib", "history.ts"),
       threads: path.join(rootDir, "lib", "threads.ts"),
     },
     outdir: desktopRuntimeOutDir,
