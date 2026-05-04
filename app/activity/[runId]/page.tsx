@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
+import Markdown from "react-markdown";
 import {
     copyTextClient,
     getDesktopShellInfo,
@@ -496,8 +497,8 @@ export default function RunDetailPage() {
                             {run.lastError ? (
                                 <section className="rounded-3xl border border-rose-200 bg-rose-50/80 p-5 shadow-[0_12px_40px_rgba(244,63,94,0.08)]">
                                     <div className="text-sm font-medium uppercase tracking-[0.18em] text-rose-700">Error</div>
-                                    <div className="mt-3 whitespace-pre-wrap text-sm leading-7 text-rose-900">
-                                        {run.lastError}
+                                    <div className="wp-prose wp-prose-error mt-3 text-sm leading-7 text-rose-900">
+                                        <Markdown>{run.lastError}</Markdown>
                                     </div>
                                 </section>
                             ) : null}
@@ -559,7 +560,9 @@ export default function RunDetailPage() {
                                                     </div>
                                                 ) : null}
                                                 {step.error ? (
-                                                    <div className="mt-3 text-sm text-rose-700">{step.error}</div>
+                                                    <div className="wp-prose wp-prose-error mt-3 text-sm text-rose-700">
+                                                        <Markdown>{step.error}</Markdown>
+                                                    </div>
                                                 ) : null}
                                                 {(step.args !== undefined || step.preUrl || step.postTitle) ? (
                                                     <details className="mt-3">

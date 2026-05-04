@@ -239,8 +239,8 @@ export function DetailedView() {
 
         {/* Error display */}
         {lastError && (
-          <div className="mb-3 overflow-x-auto whitespace-pre-wrap break-all rounded-[var(--wp-radius-md)] border border-wp-error/20 bg-wp-error/10 px-3 py-2 font-mono text-[12px] text-wp-error/90">
-            {lastError}
+          <div className="wp-prose wp-prose-error mb-3 overflow-x-auto break-words rounded-[var(--wp-radius-md)] border border-wp-error/20 bg-wp-error/10 px-3 py-2 text-[12px] text-wp-error/90">
+            <Markdown>{lastError}</Markdown>
           </div>
         )}
 

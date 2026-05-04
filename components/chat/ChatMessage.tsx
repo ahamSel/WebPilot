@@ -28,11 +28,11 @@ function ErrorBlock({ error }: { error: string }) {
   return (
     <div className="mt-1.5 bg-wp-error/10 border border-wp-error/20 rounded-[var(--wp-radius-sm)] overflow-hidden">
       <div
-        className={`px-2.5 py-2 text-[12px] text-wp-error/90 font-mono whitespace-pre-wrap break-all overflow-x-auto ${
+        className={`wp-prose wp-prose-error px-2.5 py-2 text-[12px] text-wp-error/90 break-words overflow-x-auto ${
           !expanded && isLong ? "max-h-24 overflow-hidden" : ""
         }`}
       >
-        {error}
+        <Markdown>{error}</Markdown>
       </div>
       {isLong && (
         <button

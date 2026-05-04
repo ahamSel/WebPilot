@@ -103,8 +103,8 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
       {/* Error */}
       {data.lastError && (
         <div className="mx-4 mt-3 min-w-0 shrink-0 rounded-[var(--wp-radius-md)] border border-wp-error/20 bg-wp-error/10 px-3 py-2">
-          <div className="whitespace-pre-wrap break-words font-mono text-[12px] text-wp-error/90">
-            {data.lastError}
+          <div className="wp-prose wp-prose-error break-words text-[12px] text-wp-error/90">
+            <Markdown>{data.lastError}</Markdown>
           </div>
         </div>
       )}

@@ -43,6 +43,14 @@ body {
 .wp-prose blockquote { border-left: 2px solid var(--wp-accent); padding-left: 0.75em; margin: 0.4em 0; color: var(--wp-text-secondary); }
 .wp-prose a { color: var(--wp-accent); text-decoration: underline; }
 .wp-prose hr { border-color: var(--wp-border); margin: 0.5em 0; }
+.wp-prose-error strong,
+.wp-prose-error h1,
+.wp-prose-error h2,
+.wp-prose-error h3 { color: currentColor; }
+.wp-prose-error code,
+.wp-prose-error pre { background: rgba(239, 68, 68, 0.08); }
+.wp-prose-error blockquote { border-left-color: currentColor; color: currentColor; }
+.wp-prose-error a { color: currentColor; }
 
 /* Electron titlebar drag regions — only active inside .electron root */
 :root {

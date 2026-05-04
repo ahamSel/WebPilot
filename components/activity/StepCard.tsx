@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, ReactNode } from "react";
+import Markdown from "react-markdown";
 import { Badge } from "@/components/ui/Badge";
 import {
   Globe,
@@ -94,11 +95,18 @@ export function StepCard({ step, action, duration, source, details, error, level
         </span>
       </button>
 
-      {expanded && details != null && (
+      {expanded && (details != null || error) && (
         <div className="mt-0 min-w-0 border-t border-wp-border px-3 pb-2">
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-wp-text-secondary">
-            {typeof details === "string" ? details : JSON.stringify(details, null, 2)}
-          </pre>
+          {error && (
+            <div className="wp-prose wp-prose-error mt-2 rounded-[var(--wp-radius-sm)] border border-wp-error/20 bg-wp-error/10 px-2 py-1.5 text-[11px] text-wp-error/90">
+              <Markdown>{error}</Markdown>
+            </div>
+          )}
+          {details != null && (
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-wp-text-secondary">
+              {typeof details === "string" ? details : JSON.stringify(details, null, 2)}
+            </pre>
+          )}
         </div>
       )}
     </div>
