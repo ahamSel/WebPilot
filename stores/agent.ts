@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import {
+  clearHistoryClient,
+  deleteRunClient,
   getAgentStateClient,
   listRunsClient,
 } from "@/lib/desktop-client";
@@ -67,6 +69,8 @@ interface AgentStore {
 
   fetchState: () => Promise<void>;
   fetchRuns: () => Promise<void>;
+  deleteRun: (runId: string) => Promise<void>;
+  clearHistory: () => Promise<void>;
   startPolling: () => void;
   stopPolling: () => void;
 }
@@ -104,6 +108,17 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     } catch (err) {
       console.error("[agent-store] fetchRuns error:", err);
     }
+  },
+
+  deleteRun: async (runId) => {
+    await deleteRunClient(runId);
+    set((s) => ({ runs: s.runs.filter((run) => run.runId !== runId) }));
+    await get().fetchRuns();
+  },
+
+  clearHistory: async () => {
+    await clearHistoryClient();
+    set({ runs: [] });
   },
 
   startPolling: () => {

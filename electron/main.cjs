@@ -963,6 +963,7 @@ function loadDesktopRuntimeModules() {
         desktopRuntimeModules = {
             agent: requireRuntimeModule("lib/agent.ts"),
             recorder: requireRuntimeModule("lib/recorder.ts"),
+            history: requireRuntimeModule("lib/history.ts"),
             threads: requireRuntimeModule("lib/threads.ts"),
         };
         return desktopRuntimeModules;
@@ -1103,6 +1104,21 @@ async function handleRunArtifactGet(runId, artifactName) {
     );
 }
 
+async function handleRunDelete(runId) {
+    const safeRunId = String(runId || "");
+    return withDesktopRuntime(
+        "runs:delete",
+        async ({ history }) => {
+            const result = await history.deleteHistoryRun(safeRunId);
+            if (!result.deletedRun) {
+                throw new Error("Run not found");
+            }
+            return result;
+        },
+        () => callLocalApi(`/api/runs/${encodeURIComponent(safeRunId)}`, { method: "DELETE" })
+    );
+}
+
 async function handleThreadsList(limit) {
     return withDesktopRuntime(
         "threads:list",
@@ -1124,6 +1140,29 @@ async function handleThreadGet(threadId) {
             return { thread };
         },
         () => callLocalApi("/api/threads", { query: { threadId } })
+    );
+}
+
+async function handleThreadDelete(threadId) {
+    const safeThreadId = String(threadId || "");
+    return withDesktopRuntime(
+        "threads:delete",
+        async ({ history }) => {
+            const result = await history.deleteHistoryThread(safeThreadId);
+            if (!result.deletedThread && result.deletedRuns === 0) {
+                throw new Error("Thread not found");
+            }
+            return result;
+        },
+        () => callLocalApi("/api/threads", { method: "DELETE", query: { threadId: safeThreadId } })
+    );
+}
+
+async function handleHistoryClear() {
+    return withDesktopRuntime(
+        "history:clear",
+        async ({ history }) => history.clearHistory(),
+        () => callLocalApi("/api/history", { method: "DELETE" })
     );
 }
 
@@ -1172,12 +1211,14 @@ async function runDesktopSmokeAndQuit() {
         }
         const runtime = runtimeLoadStatus();
         const settings = await readDesktopRuntimeSettings();
+        const modules = loadDesktopRuntimeModules();
         console.log(`[webpilot:desktop-smoke] ${JSON.stringify({
             platform: process.platform,
             isPackaged: app.isPackaged,
             rendererUrl: rendererUrl(),
             runtimeTransport: runtime.transport,
             runtimeError: runtime.error,
+            historyLoaded: Boolean(modules.history?.clearHistory && modules.history?.deleteHistoryRun),
             browser: settings.browser,
         })}`);
     } finally {
@@ -1434,8 +1475,11 @@ app.whenReady().then(async () => {
     ipcMain.handle("desktop:runs:list", () => handleRunsList());
     ipcMain.handle("desktop:runs:get", (_event, runId) => handleRunGet(runId));
     ipcMain.handle("desktop:runs:get-artifact", (_event, runId, artifactName) => handleRunArtifactGet(runId, artifactName));
+    ipcMain.handle("desktop:runs:delete", (_event, runId) => handleRunDelete(runId));
     ipcMain.handle("desktop:threads:list", (_event, limit) => handleThreadsList(limit));
     ipcMain.handle("desktop:threads:get", (_event, threadId) => handleThreadGet(threadId));
+    ipcMain.handle("desktop:threads:delete", (_event, threadId) => handleThreadDelete(threadId));
+    ipcMain.handle("desktop:history:clear", () => handleHistoryClear());
     ipcMain.handle("desktop:settings:get", () => handleSettingsGet());
     ipcMain.handle("desktop:settings:save", (_event, payload) => handleSettingsSave(payload));
     ipcMain.handle("desktop:browsers:list", () => listDesktopBrowsers());

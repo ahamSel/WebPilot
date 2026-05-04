@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { listThreadsClient, getThreadClient } from "@/lib/desktop-client";
+import { deleteThreadClient, getThreadClient, listThreadsClient } from "@/lib/desktop-client";
 import type { RunSummary } from "@/stores/agent";
 
 /* ── Domain types (match existing app/page.tsx shapes) ── */
@@ -39,6 +39,8 @@ interface ThreadStore {
   fetchThreads: () => Promise<void>;
   setActiveThread: (threadId: string | null) => void;
   fetchActiveThread: () => Promise<void>;
+  deleteThread: (threadId: string) => Promise<void>;
+  clearThreadState: () => void;
 }
 
 export const useThreadStore = create<ThreadStore>((set, get) => ({
@@ -91,5 +93,20 @@ export const useThreadStore = create<ThreadStore>((set, get) => ({
       localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY);
       set({ activeThreadId: null, activeThread: null, loading: false });
     }
+  },
+
+  deleteThread: async (threadId) => {
+    await deleteThreadClient(threadId);
+    if (get().activeThreadId === threadId) {
+      localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY);
+      set({ activeThreadId: null, activeThread: null });
+    }
+    set((s) => ({ threads: s.threads.filter((thread) => thread.threadId !== threadId) }));
+    await get().fetchThreads();
+  },
+
+  clearThreadState: () => {
+    localStorage.removeItem(ACTIVE_THREAD_STORAGE_KEY);
+    set({ threads: [], activeThreadId: null, activeThread: null, loading: false });
   },
 }));

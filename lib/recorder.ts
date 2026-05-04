@@ -205,7 +205,7 @@ export interface ListRunsOptions {
     threadId?: string;
 }
 
-function normalizeRunId(runId: string): string {
+export function normalizeRunId(runId: string): string {
     const trimmed = String(runId || "").trim();
     if (!trimmed) {
         throw new Error("runId required");
@@ -415,6 +415,32 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
 
 async function readTextFile(filePath: string): Promise<string | null> {
     return fs.readFile(filePath, "utf8").catch(() => null);
+}
+
+export async function deleteRun(runId: string): Promise<{ runId: string; threadId?: string; deleted: boolean }> {
+    const safeRunId = normalizeRunId(runId);
+    const runDir = runDirForId(safeRunId);
+    const meta = await readJsonFile<Record<string, unknown>>(path.join(runDir, "run.json"));
+    const stats = await fs.stat(runDir).catch(() => null);
+    await fs.rm(runDir, { recursive: true, force: true });
+    return {
+        runId: safeRunId,
+        threadId: typeof meta?.threadId === "string" ? meta.threadId : undefined,
+        deleted: Boolean(stats),
+    };
+}
+
+export async function deleteAllRuns(): Promise<{ deletedRuns: number }> {
+    const entries = await fs.readdir(RUN_ROOT).catch(() => []);
+    let deletedRuns = 0;
+    for (const entry of entries) {
+        const runDir = path.join(RUN_ROOT, entry);
+        const stats = await fs.stat(runDir).catch(() => null);
+        if (!stats?.isDirectory()) continue;
+        await fs.rm(runDir, { recursive: true, force: true });
+        deletedRuns += 1;
+    }
+    return { deletedRuns };
 }
 
 export async function listRuns(limit: number = 20, options: ListRunsOptions = {}): Promise<RunSummary[]> {

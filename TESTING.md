@@ -51,8 +51,10 @@ Check these views in web and Electron:
 - Ollama discovery hides known embedding-only models when metadata identifies them.
 - Browser source and profile controls render without clipping.
 - Activity lists recent runs.
+- Activity confirms before deleting a run and refreshes the list afterward.
 - Run detail shows summary, timing, steps, logs, artifacts, and final result.
-- Library shows threads and lets users switch run history.
+- Run detail confirms before deleting the selected run.
+- Library shows threads, lets users switch run history, and confirms before deleting a thread or clearing history.
 
 ## Layout Checks
 

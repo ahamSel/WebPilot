@@ -11,7 +11,7 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 - Model providers: Gemini, OpenAI, OpenAI-compatible endpoints, and Ollama.
 - Runtime settings UI for provider, model, browser source, profile strategy, headless mode, and isolation.
 - Local run recording with logs, step traces, artifacts, timing, and final results.
-- Thread history for follow-up tasks.
+- Thread history for follow-up tasks, with controls to delete individual runs, delete conversations, or clear saved history.
 - MCP endpoint and stdio server for external agents and tools.
 - Unsigned macOS desktop builds for early public releases.
 
@@ -93,6 +93,10 @@ The app supports these runtime browser modes:
 - Custom executable path for advanced users.
 
 Profile discovery is platform-specific and conservative. Browser profile data can contain cookies and private browsing state, so treat profile paths as sensitive.
+
+## History Storage
+
+WebPilot stores run history and thread history locally. The Library and Activity views can delete individual runs, delete a thread and its runs, or clear saved history. These actions remove saved run/thread records and run artifacts only; they do not delete model settings, browser profile folders, or future opt-in cache data.
 
 ## Useful Commands
 

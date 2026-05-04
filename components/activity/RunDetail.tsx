@@ -3,9 +3,13 @@
 import { useEffect, useState } from "react";
 import Markdown from "react-markdown";
 import { getRunDetailClient } from "@/lib/desktop-client";
+import { useAgentStore } from "@/stores/agent";
+import { useThreadStore } from "@/stores/thread";
+import { useUIStore } from "@/stores/ui";
 import { StepCard } from "./StepCard";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
 
 interface RunStep {
   step: number;
@@ -21,6 +25,7 @@ interface RunStep {
 interface RunDetailData {
   runId: string;
   goal: string;
+  userGoal?: string;
   status: string;
   startedAt: string;
   finishedAt?: string;
@@ -33,13 +38,19 @@ interface RunDetailData {
 interface RunDetailProps {
   runId: string;
   onBack: () => void;
+  onDeleted?: () => void;
 }
 
-export function RunDetail({ runId, onBack }: RunDetailProps) {
+export function RunDetail({ runId, onBack, onDeleted }: RunDetailProps) {
+  const deleteRun = useAgentStore((s) => s.deleteRun);
+  const fetchThreads = useThreadStore((s) => s.fetchThreads);
+  const addToast = useUIStore((s) => s.addToast);
   const [data, setData] = useState<RunDetailData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newestFirst, setNewestFirst] = useState(true);
   const [failedOnly, setFailedOnly] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     getRunDetailClient(runId)
@@ -80,6 +91,21 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
     data.status === "error" || data.status === "stopped" ? "error" :
     "neutral";
 
+  async function confirmDelete() {
+    const runData = data;
+    if (!runData) return;
+    setDeleting(true);
+    try {
+      await deleteRun(runId);
+      await fetchThreads();
+      addToast("Run deleted", "success");
+      (onDeleted || onBack)();
+    } catch (err) {
+      addToast(`Failed to delete run: ${err instanceof Error ? err.message : "unknown error"}`, "error");
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="wp-titlebar flex min-w-0 shrink-0 items-center gap-2 border-b border-wp-border px-4 py-3">
@@ -90,6 +116,9 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           {data.goal}
         </span>
         <Badge tone={statusTone}>{data.status}</Badge>
+        <Button variant="danger" size="sm" onClick={() => setConfirmOpen(true)} disabled={deleting}>
+          Delete
+        </Button>
       </div>
 
       {/* Summary */}
@@ -159,6 +188,16 @@ export function RunDetail({ runId, onBack }: RunDetailProps) {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Delete Run"
+        message={`Delete this run and its saved artifacts? Settings, browser profiles, and opt-in cache data are not affected. ${data.userGoal || data.goal || runId}`}
+        confirmLabel="Delete"
+        busy={deleting}
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 }
