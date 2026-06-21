@@ -22,8 +22,8 @@ const nextConfig: NextConfig = {
   outputFileTracingExcludes: {
     "/**": standaloneExcludes,
   },
-  // Note: if Turbopack panics in constrained envs, run build with
-  // NEXT_USE_TURBOPACK=0 npm run build to force webpack.
+  // Keep local/release commands on webpack for Windows packaging; Turbopack
+  // requires native SWC bindings that may be unavailable on release hosts.
 };
 
 export default nextConfig;

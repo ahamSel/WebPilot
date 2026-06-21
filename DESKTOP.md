@@ -43,6 +43,14 @@ Unsigned/ad-hoc build:
 npm run desktop:build
 ```
 
+Platform-specific unsigned builds:
+
+```bash
+npm run desktop:build:mac
+npm run desktop:build:win
+npm run desktop:build:linux
+```
+
 Explicit signed build:
 
 ```bash
@@ -55,6 +63,10 @@ The default build intentionally disables signing identity auto-discovery. This a
 
 Electron Builder writes artifacts to `desktop_dist/`.
 
+- macOS: `.dmg`
+- Windows: unsigned NSIS `.exe` and `.zip`
+- Linux: AppImage and `.zip`
+
 The build prep step:
 
 - runs Next standalone build
@@ -65,4 +77,6 @@ The build prep step:
 
 ## Platform Status
 
-macOS is the first release target. Windows and Linux packaging are configured but should be tested on those platforms before public release artifacts are published.
+macOS has the established release workflow. Windows packaging can be built and smoke-tested on a Windows host with `npm run desktop:build:win && npm run desktop:smoke`. Linux packaging is prepared for native Linux hosts and the `Package Desktop` GitHub Actions workflow; use the workflow when a local Linux desktop environment is unavailable.
+
+All public alpha artifacts are unsigned unless release notes explicitly say otherwise. The default unsigned Windows build is intentionally unprivileged and skips executable signing/resource-editing steps that require Electron Builder's Windows signing tool bundle. Do not imply Windows code signing, Microsoft Store distribution, Linux repository signing, or macOS notarization until those credentials and checks exist.

@@ -11,7 +11,6 @@
  * instance, so there is zero contention between agents.
  */
 
-import { Type } from "@google/genai";
 import {
     mcpText,
     parseSnapshot,
@@ -29,6 +28,7 @@ import {
     type ToolResponsePart,
 } from "./model-client";
 import type { BrowserChannel, BrowserRuntimeSettings } from "./browser-runtime";
+import { getBrowserToolDeclarations } from "./tool-schema";
 
 // ============================================================================
 // TYPES
@@ -495,78 +495,7 @@ Rules:
                 model: this.config.runtime.navModel,
             });
 
-            const tools: ToolDeclaration[] = [
-                {
-                    name: "observe",
-                    description: "Get current page accessibility snapshot",
-                    parameters: { type: Type.OBJECT, properties: {} },
-                },
-                {
-                    name: "navigate",
-                    description: "Navigate to a URL",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: { url: { type: Type.STRING, description: "URL to navigate to" } },
-                        required: ["url"],
-                    },
-                },
-                {
-                    name: "click",
-                    description: "Click an element by ref",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            ref: { type: Type.STRING, description: "Element ref (e.g. 'e5')" },
-                            element: { type: Type.STRING, description: "Description of the element" },
-                        },
-                        required: ["ref", "element"],
-                    },
-                },
-                {
-                    name: "type",
-                    description: "Type text into an input field",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            ref: { type: Type.STRING, description: "Element ref" },
-                            text: { type: Type.STRING, description: "Text to type" },
-                            submit: { type: Type.BOOLEAN, description: "Press Enter after" },
-                            clear: { type: Type.BOOLEAN, description: "Clear field first" },
-                        },
-                        required: ["ref", "text"],
-                    },
-                },
-                {
-                    name: "scroll",
-                    description: "Scroll the page",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            direction: { type: Type.STRING, description: "up/down/left/right" },
-                            amount: { type: Type.NUMBER, description: "Pixels (default 500)" },
-                        },
-                    },
-                },
-                {
-                    name: "wait",
-                    description: "Wait seconds",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: { seconds: { type: Type.NUMBER, description: "Seconds (default 2)" } },
-                    },
-                },
-                {
-                    name: "finish",
-                    description: "Complete the task with results",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            result: { type: Type.STRING, description: "Summary of findings" },
-                        },
-                        required: ["result"],
-                    },
-                },
-            ];
+            const tools: ToolDeclaration[] = getBrowserToolDeclarations({ includeTabTools: false });
 
             const chat = modelClient.createToolChat({
                 model: this.config.runtime.navModel,

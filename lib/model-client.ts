@@ -6,6 +6,11 @@ import {
     type ModelProvider,
 } from "./runtime-provider-presets";
 import type { BrowserRuntimeOverrides } from "./browser-runtime";
+import {
+    normalizeJsonSchemaTypes,
+    normalizeToolDeclaration,
+    type NormalizedToolDeclaration,
+} from "./tool-schema";
 
 export interface RuntimeModelOverrides {
     provider?: string;
@@ -43,11 +48,7 @@ export interface RuntimeModelSummary {
     hasApiKey: boolean;
 }
 
-export interface ToolDeclaration {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-}
+export type ToolDeclaration = NormalizedToolDeclaration;
 
 export interface ToolCall {
     id?: string;
@@ -154,25 +155,7 @@ function buildAnthropicUrl(baseUrl: string): string {
 }
 
 function lowerCaseSchemaType(value: unknown): unknown {
-    if (Array.isArray(value)) {
-        return value.map((item) => lowerCaseSchemaType(item));
-    }
-    if (!value || typeof value !== "object") {
-        if (typeof value === "string" && /^[A-Z_]+$/.test(value)) {
-            return value.toLowerCase();
-        }
-        return value;
-    }
-
-    const next: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
-        if (key === "type" && typeof child === "string") {
-            next[key] = child.toLowerCase();
-            continue;
-        }
-        next[key] = lowerCaseSchemaType(child);
-    }
-    return next;
+    return normalizeJsonSchemaTypes(value, "lower");
 }
 
 function extractGeminiText(response: unknown): string {
@@ -296,12 +279,13 @@ class GeminiToolChat implements ToolChat {
 
     constructor(private config: RuntimeModelConfig, options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
         const ai = new GoogleGenAI({ apiKey: config.apiKey });
+        const tools = options.tools.map((tool) => normalizeToolDeclaration(tool, { typeCase: "upper" }));
         this.chat = ai.chats.create({
             model: options.model,
             config: {
                 systemInstruction: options.systemInstruction,
                 tools: [{
-                    functionDeclarations: options.tools,
+                    functionDeclarations: tools,
                 }],
             },
         });
@@ -347,14 +331,17 @@ class OpenAiCompatibleToolChat implements ToolChat {
 
     constructor(private config: RuntimeModelConfig, private options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
         this.messages = [{ role: "system", content: options.systemInstruction }];
-        this.tools = options.tools.map((tool) => ({
-            type: "function",
-            function: {
-                name: tool.name,
-                description: tool.description,
-                parameters: lowerCaseSchemaType(tool.parameters),
-            },
-        }));
+        this.tools = options.tools.map((rawTool) => {
+            const tool = normalizeToolDeclaration(rawTool, { typeCase: "lower" });
+            return {
+                type: "function",
+                function: {
+                    name: tool.name,
+                    description: tool.description,
+                    parameters: lowerCaseSchemaType(tool.parameters),
+                },
+            };
+        });
     }
 
     async sendMessage(message: string | ToolResponsePart[]): Promise<ToolChatResponse> {
@@ -486,11 +473,14 @@ class AnthropicToolChat implements ToolChat {
     private pendingToolCalls: Array<{ id: string; name: string }> = [];
 
     constructor(private config: RuntimeModelConfig, private options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
-        this.tools = options.tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            input_schema: lowerCaseSchemaType(tool.parameters) as Record<string, unknown>,
-        }));
+        this.tools = options.tools.map((rawTool) => {
+            const tool = normalizeToolDeclaration(rawTool, { typeCase: "lower" });
+            return {
+                name: tool.name,
+                description: tool.description,
+                input_schema: lowerCaseSchemaType(tool.parameters) as Record<string, unknown>,
+            };
+        });
     }
 
     async sendMessage(message: string | ToolResponsePart[]): Promise<ToolChatResponse> {

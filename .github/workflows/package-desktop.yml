@@ -1,0 +1,71 @@
+name: Package Desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  package:
+    name: Package ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            os: windows-latest
+            build_script: desktop:build:win
+            smoke_script: npm run desktop:smoke
+            artifact_name: WebPilot-Windows
+            artifact_paths: |
+              desktop_dist/*.exe
+              desktop_dist/*.zip
+          - label: Linux
+            os: ubuntu-latest
+            build_script: desktop:build:linux
+            smoke_script: xvfb-run -a npm run desktop:smoke
+            artifact_name: WebPilot-Linux
+            artifact_paths: |
+              desktop_dist/*.AppImage
+              desktop_dist/*.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Linux smoke dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Build package
+        run: npm run ${{ matrix.build_script }}
+
+      - name: Smoke test package
+        run: ${{ matrix.smoke_script }}
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.artifact_name }}-${{ github.ref_name }}
+          path: ${{ matrix.artifact_paths }}
+          if-no-files-found: error

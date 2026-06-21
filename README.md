@@ -13,7 +13,8 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 - Local run recording with logs, step traces, artifacts, timing, and final results.
 - Thread history for follow-up tasks, with controls to delete individual runs, delete conversations, or clear saved history.
 - MCP endpoint and stdio server for external agents and tools.
-- Unsigned macOS desktop builds for early public releases.
+- Unsigned desktop packaging for macOS, Windows, and Linux release candidates.
+- Versioned browser tool schemas with adapter tests for provider/MCP shape changes.
 
 ## Quick Start
 
@@ -102,13 +103,37 @@ WebPilot stores run history and thread history locally. The Library and Activity
 
 ```bash
 npm run build
+npm run test
+npm run browsers:install
+npm run browser:smoke
 npm run health
 npm run agent:cli -- "Go to https://example.com and summarize the page"
 npm run mcp:stdio
 npm run desktop:build
 ```
 
-`npm run desktop:build` creates an unsigned/ad-hoc desktop build by default. Use `npm run desktop:build:signed` only when you have a signing identity configured.
+`npm run browser:smoke` uses a local fixture page and Playwright Chromium. It does not require model credentials or external websites.
+
+## Desktop Builds
+
+`npm run desktop:build` creates an unsigned/ad-hoc desktop build for the current platform. Use `npm run desktop:build:signed` only when you have signing credentials configured.
+
+Platform-specific commands:
+
+```bash
+npm run desktop:build:mac
+npm run desktop:build:win
+npm run desktop:build:linux
+npm run desktop:smoke
+```
+
+Windows builds produce unsigned NSIS `.exe` and `.zip` artifacts under `desktop_dist/`. The default unsigned Windows command skips executable signing/resource editing so it can run from a normal PowerShell session; Windows SmartScreen may warn because these builds are not trusted code-signed releases.
+
+Linux builds produce AppImage and `.zip` artifacts under `desktop_dist/`. Linux packaging is prepared for native Linux runners and the `Package Desktop` GitHub Actions workflow.
+
+## Tool Schema Strategy
+
+Browser-agent tools are declared in `lib/tool-schema.ts` with schema version `webpilot.browser-tools.v1`. Model providers receive normalized tool declarations, so WebPilot is not coupled to one raw MCP or provider payload shape. Unit tests cover current, legacy, and future-style schema variants.
 
 ## Project Docs
 

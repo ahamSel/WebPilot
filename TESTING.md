@@ -3,11 +3,29 @@
 ## Static Checks
 
 ```bash
+npm run test
 npm run build
 node -c electron/main.cjs
 node -c electron/preload.cjs
 npm run health
 ```
+
+## Tool Schema Tests
+
+```bash
+npm run test
+```
+
+This verifies the versioned browser tool schema adapter against current WebPilot declarations, legacy MCP-style `input_schema`, OpenAI-style wrapped function declarations, missing optional fields, and unknown extension fields.
+
+## Deterministic Browser Smoke
+
+```bash
+npm run browsers:install
+npm run browser:smoke
+```
+
+The browser smoke starts a local fixture server and verifies that Playwright Chromium can open a page, click a button, fill an input, extract text, handle a navigation, and surface a failed selector error. It does not require model credentials or external websites.
 
 ## Local API Smoke
 
@@ -29,7 +47,7 @@ curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=ollama"
 
 ## Agent Smoke
 
-With a configured model provider:
+With a configured model provider, run the full agent loop:
 
 ```bash
 npm run agent:cli -- "Go to https://example.com and tell me the page heading in one short sentence."
@@ -70,12 +88,22 @@ Look for horizontal overflow, clipped buttons, clipped selects, titlebar overlap
 
 ```bash
 npm run desktop:build
+npm run desktop:smoke
 ```
 
-Then open the generated macOS artifact locally and verify:
+Use platform-specific build scripts when preparing a release candidate:
+
+```bash
+npm run desktop:build:win
+npm run desktop:build:linux
+```
+
+Then smoke-test the generated package on the same OS:
 
 - app launches
 - settings persist
 - managed browser can run a simple task
 - activity/run detail opens
 - no local runtime folders are bundled into the app resources
+
+`npm run desktop:smoke` launches the packaged app with isolated temporary data and verifies that the direct desktop runtime loads instead of falling back to HTTP. On Linux CI, run it under `xvfb-run -a`.
