@@ -11,21 +11,26 @@
   },
   "scripts": {
     "mcp:stdio": "tsx bin/mcp-stdio.ts",
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
+    "test": "node --import tsx --test tests/tool-schema.test.ts",
     "health": "node scripts/health-check.js",
     "mcp:cli": "node scripts/mcp-cli.js",
     "agent:cli": "node scripts/agent-runner.js",
     "agent:e2e": "node scripts/agent-e2e.js",
+    "browser:smoke": "node scripts/browser-smoke.mjs",
     "browsers:install": "node scripts/prepare-playwright-browsers.mjs",
     "desktop:dev": "node scripts/electron-dev.mjs",
     "desktop:start": "electron .",
     "desktop:build:prepare": "npm run build && npm run browsers:install && node scripts/prepare-electron-build.mjs",
     "desktop:smoke": "node scripts/desktop-smoke.mjs",
     "desktop:build": "npm run desktop:build:unsigned",
-    "desktop:build:unsigned": "npm run desktop:build:prepare && CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "desktop:build:unsigned": "npm run desktop:build:prepare && node scripts/electron-builder-unsigned.mjs --publish never",
+    "desktop:build:mac": "npm run desktop:build:prepare && node scripts/electron-builder-unsigned.mjs --mac --publish never",
+    "desktop:build:win": "npm run desktop:build:prepare && node scripts/electron-builder-unsigned.mjs --win --publish never -c.win.signAndEditExecutable=false",
+    "desktop:build:linux": "npm run desktop:build:prepare && node scripts/electron-builder-unsigned.mjs --linux --publish never",
     "desktop:build:signed": "npm run desktop:build:prepare && electron-builder"
   },
   "dependencies": {
@@ -66,6 +71,7 @@
     "appId": "com.webpilot.desktop",
     "productName": "WebPilot",
     "electronDist": "node_modules/electron/dist",
+    "compression": "normal",
     "directories": {
       "output": "desktop_dist"
     },
@@ -112,13 +118,16 @@
     "win": {
       "icon": "assets/app-icon/icon.ico",
       "target": [
-        "nsis"
+        "nsis",
+        "zip"
       ]
     },
     "linux": {
       "icon": "assets/app-icon/icon.png",
+      "category": "Utility",
       "target": [
-        "AppImage"
+        "AppImage",
+        "zip"
       ]
     }
   }

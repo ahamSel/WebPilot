@@ -117,7 +117,7 @@ jobs:
         run: npm ci
 
       - name: Build unsigned macOS app
-        run: npm run desktop:build:prepare && ./node_modules/.bin/electron-builder --publish never
+        run: npm run desktop:build:mac
 
       - name: Smoke test packaged app
         run: npm run desktop:smoke

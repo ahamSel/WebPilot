@@ -7,6 +7,8 @@ import os from "node:os";
 const rootDir = process.cwd();
 const distDir = path.join(rootDir, "desktop_dist");
 const smokePrefix = "[webpilot:desktop-smoke] ";
+const linuxExecutableNames = new Set(["WebPilot", "web-pilot"]);
+const packagedArgs = process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [];
 
 async function pathExists(target) {
   try {
@@ -17,18 +19,44 @@ async function pathExists(target) {
   }
 }
 
-async function findPackagedApp(dir, depth = 0) {
+async function findPackagedExecutable(dir, depth = 0) {
   if (depth > 4 || !(await pathExists(dir))) return null;
   const entries = await fs.readdir(dir, { withFileTypes: true });
-  for (const entry of entries) {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory() && entry.name === "WebPilot.app") {
-      return fullPath;
+
+  if (process.platform === "darwin") {
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory() && entry.name === "WebPilot.app") {
+        return path.join(fullPath, "Contents", "MacOS", "WebPilot");
+      }
     }
   }
+
+  if (process.platform === "win32") {
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name === "WebPilot.exe") {
+        return fullPath;
+      }
+    }
+  }
+
+  if (process.platform === "linux") {
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (
+        entry.isFile() &&
+        linuxExecutableNames.has(entry.name) &&
+        fullPath.includes(`${path.sep}linux-unpacked${path.sep}`)
+      ) {
+        return fullPath;
+      }
+    }
+  }
+
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
-    const found = await findPackagedApp(path.join(dir, entry.name), depth + 1);
+    const found = await findPackagedExecutable(path.join(dir, entry.name), depth + 1);
     if (found) return found;
   }
   return null;
@@ -50,7 +78,7 @@ function reservePort(port) {
 
 function runPackagedSmoke(executablePath, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executablePath, [], {
+    const child = spawn(executablePath, packagedArgs, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -91,10 +119,11 @@ function runPackagedSmoke(executablePath, env) {
   });
 }
 
-const appPath = await findPackagedApp(distDir);
-assert(appPath, "Could not find WebPilot.app under desktop_dist. Build the desktop app before running desktop:smoke.");
-
-const executablePath = path.join(appPath, "Contents", "MacOS", "WebPilot");
+const executablePath = await findPackagedExecutable(distDir);
+assert(
+  executablePath,
+  `Could not find a packaged WebPilot executable for ${process.platform} under desktop_dist. Build the desktop app before running desktop:smoke.`
+);
 const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), "webpilot-smoke-user-data-"));
 const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), "webpilot-smoke-runtime-"));
 const defaultPort = Number(process.env.ELECTRON_PORT || 3210);
@@ -121,12 +150,12 @@ try {
   );
   const rendererPort = new URL(result.rendererUrl).port;
   assert(
-    rendererPort !== String(defaultPort),
+    !reservedDefaultPort || rendererPort !== String(defaultPort),
     "Packaged app should move off the default port when it is already occupied.",
     result
   );
 
-  console.log("[desktop:smoke] Packaged Electron app loaded with direct runtime, isolated data, dynamic port, and headed browser defaults.");
+  console.log(`[desktop:smoke] Packaged ${process.platform} Electron app loaded with direct runtime, isolated data, dynamic port, and headed browser defaults.`);
 } finally {
   if (reservedDefaultPort) {
     await new Promise((resolve) => reservedDefaultPort.close(resolve));

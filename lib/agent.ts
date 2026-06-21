@@ -1,4 +1,3 @@
-import { Type } from "@google/genai";
 import { SubAgent } from "./sub-agent";
 import { createCoordinationBus } from "./coordination-bus";
 import { looksLikeLoginOrSecurityBlock } from "./security-detect";
@@ -31,6 +30,7 @@ import {
     type BrowserRuntimeSettings,
 } from "./browser-runtime";
 import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThreadOnRunStart } from "./threads";
+import { getBrowserToolDeclarations } from "./tool-schema";
 
 // Env vars
 const DEFAULT_CDP_HTTP = "http://127.0.0.1:9222";
@@ -1411,115 +1411,7 @@ Tips:
                 synthEnabled: modelConfig.synthEnabled,
             });
 
-            const tools: ToolDeclaration[] = [
-                {
-                    name: "observe",
-                    description: "Get current page accessibility snapshot with interactive elements, ref IDs, visible text, and evidence",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            maxTextChars: { type: Type.NUMBER, description: "Optional max visible text chars to capture (default 7000)" },
-                            maxElements: { type: Type.NUMBER, description: "Optional max interactive elements to capture (default 80)" },
-                        },
-                    },
-                },
-                {
-                    name: "navigate",
-                    description: "Navigate to a URL",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            url: { type: Type.STRING, description: "The URL to navigate to" },
-                        },
-                        required: ["url"],
-                    },
-                },
-                {
-                    name: "click",
-                    description: "Click an element by its ref from the latest observe snapshot",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            ref: { type: Type.STRING, description: "Element ref from snapshot (e.g. 'e5')" },
-                            element: { type: Type.STRING, description: "Human-readable description of the element being clicked" },
-                        },
-                        required: ["ref", "element"],
-                    },
-                },
-                {
-                    name: "type",
-                    description: "Type text into an input field by its ref",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            ref: { type: Type.STRING, description: "Element ref from snapshot" },
-                            text: { type: Type.STRING, description: "Text to type" },
-                            submit: { type: Type.BOOLEAN, description: "Press Enter after typing" },
-                            clear: { type: Type.BOOLEAN, description: "Clear existing content before typing" },
-                        },
-                        required: ["ref", "text"],
-                    },
-                },
-                {
-                    name: "scroll",
-                    description: "Scroll the page in a direction",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            direction: { type: Type.STRING, description: "Scroll direction: up, down, left, right" },
-                            amount: { type: Type.NUMBER, description: "Pixels to scroll (default 500)" },
-                        },
-                    },
-                },
-                {
-                    name: "wait",
-                    description: "Wait for a specified number of seconds",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            seconds: { type: Type.NUMBER, description: "Seconds to wait (default 2)" },
-                        },
-                    },
-                },
-                {
-                    name: "new_tab",
-                    description: "Open a new browser tab for parallel browsing",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {},
-                    },
-                },
-                {
-                    name: "switch_tab",
-                    description: "Switch to a browser tab by index (0-based)",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            index: { type: Type.NUMBER, description: "Tab index to switch to (0-based)" },
-                        },
-                        required: ["index"],
-                    },
-                },
-                {
-                    name: "list_tabs",
-                    description: "List all open browser tabs with their indices and URLs",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {},
-                    },
-                },
-                {
-                    name: "finish",
-                    description: "Complete the task with results",
-                    parameters: {
-                        type: Type.OBJECT,
-                        properties: {
-                            result: { type: Type.STRING, description: "Summary of what was accomplished" },
-                        },
-                        required: ["result"],
-                    },
-                },
-            ];
+            const tools: ToolDeclaration[] = getBrowserToolDeclarations({ includeTabTools: true });
 
             const chat = modelClient.createToolChat({
                 model: modelConfig.navModel,

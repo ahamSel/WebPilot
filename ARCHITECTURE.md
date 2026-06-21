@@ -22,6 +22,7 @@ WebPilot is a local-first agentic browser. The public app has four main layers:
 - `lib/agent.ts`: sequential agent loop, model/tool orchestration, pause/stop handling, run finalization.
 - `lib/sub-agent.ts`: isolated parallel agents used for split multi-site tasks.
 - `lib/model-client.ts`: provider abstraction for Gemini, OpenAI, OpenAI-compatible endpoints, and Ollama.
+- `lib/tool-schema.ts`: versioned browser tool declarations and schema normalization for provider/MCP compatibility.
 - `lib/browser-runtime.ts`: browser/profile settings schema and sanitization.
 - `lib/playwright-mcp-driver.ts`: in-process Playwright MCP client, snapshot parsing, page text, and evidence extraction.
 - `lib/recorder.ts`: run metadata, step logs, artifacts, and run listing/detail APIs.
@@ -43,6 +44,12 @@ Packaged Electron builds store runtime data under the app user-data directory.
 ## Browser Control
 
 The browser layer is built around Playwright MCP. WebPilot can launch a managed browser, use selected Playwright browser channels, connect to a CDP endpoint, or launch a custom executable. Existing profile usage is intentionally conservative because browser profiles can contain sensitive account state.
+
+## Tool Schema Versioning
+
+The agent exposes a stable WebPilot browser tool schema from `lib/tool-schema.ts` instead of scattering raw provider payloads through the runtime. The current schema version is `webpilot.browser-tools.v1`.
+
+`lib/model-client.ts` normalizes tool declarations before sending them to Gemini, OpenAI-compatible providers, Anthropic, or Ollama. The normalizer accepts current WebPilot `parameters`, MCP-style `inputSchema` or `input_schema`, and OpenAI-style wrapped `function` payloads. Unknown fields are preserved, missing optional fields get safe defaults, and provider-specific type casing is handled at the adapter boundary.
 
 ## Model Providers
 

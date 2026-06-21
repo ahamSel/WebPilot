@@ -18,6 +18,24 @@ npm run desktop:dev
 
 The desktop dev command starts Next.js on port `3210` by default and launches Electron against that local URL.
 
+## Desktop Packages
+
+Build an unsigned package for the current OS:
+
+```bash
+npm run desktop:build
+npm run desktop:smoke
+```
+
+Build a specific platform on a matching host or CI runner:
+
+```bash
+npm run desktop:build:win
+npm run desktop:build:linux
+```
+
+Artifacts are written to `desktop_dist/`. Windows builds are unsigned and may show SmartScreen warnings. Linux builds are best verified on a native Linux runner or with the `Package Desktop` GitHub Actions workflow.
+
 ## Production Server
 
 ```bash

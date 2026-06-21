@@ -31,6 +31,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Unit tests
+        run: npm run test
+
       - name: Electron syntax check
         run: |
           node -c electron/main.cjs
@@ -40,11 +43,19 @@ jobs:
         run: |
           node -c scripts/agent-e2e.js
           node -c scripts/agent-runner.js
+          node -c scripts/browser-smoke.mjs
           node -c scripts/desktop-smoke.mjs
+          node -c scripts/electron-builder-unsigned.mjs
           node -c scripts/health-check.js
           node -c scripts/mcp-cli.js
           node -c scripts/prepare-electron-build.mjs
           node -c scripts/prepare-playwright-browsers.mjs
+
+      - name: Install Playwright Chromium
+        run: npm run browsers:install
+
+      - name: Browser smoke
+        run: npm run browser:smoke
 
       - name: Health check
         run: npm run health
