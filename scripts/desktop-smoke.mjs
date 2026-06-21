@@ -8,7 +8,10 @@ const rootDir = process.cwd();
 const distDir = path.join(rootDir, "desktop_dist");
 const smokePrefix = "[webpilot:desktop-smoke] ";
 const linuxExecutableNames = new Set(["WebPilot", "web-pilot"]);
-const packagedArgs = process.platform === "linux" && process.getuid?.() === 0 ? ["--no-sandbox"] : [];
+const needsLinuxNoSandbox =
+  process.platform === "linux" &&
+  (process.getuid?.() === 0 || process.env.GITHUB_ACTIONS === "true");
+const packagedArgs = needsLinuxNoSandbox ? ["--no-sandbox"] : [];
 
 async function pathExists(target) {
   try {
