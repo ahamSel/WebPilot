@@ -4,6 +4,12 @@ Open-source agentic browser with Playwright control, bring-your-own model provid
 
 WebPilot is meant to be a hackable, local-first alternative to closed agentic browsers. The default browser is Playwright Chromium, but the desktop app can also target installed browser channels and user-selected profile folders where the platform allows it.
 
+## Demo
+
+[![WebPilot controlling a live browser and recording its agent steps](./docs/assets/webpilot-demo-poster.jpg)](https://raw.githubusercontent.com/ahamSel/WebPilot/main/docs/assets/webpilot-demo.mp4)
+
+[Watch the 85-second demo](https://raw.githubusercontent.com/ahamSel/WebPilot/main/docs/assets/webpilot-demo.mp4)
+
 ## Features
 
 - Desktop app built with Electron and Next.js.
