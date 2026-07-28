@@ -6,9 +6,9 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 
 ## Demo
 
-[![WebPilot controlling a live browser and recording its agent steps](./docs/assets/webpilot-demo-poster.jpg)](https://raw.githubusercontent.com/ahamSel/WebPilot/main/docs/assets/webpilot-demo.mp4)
+[![WebPilot controlling a live browser and recording its agent steps](./docs/assets/webpilot-demo-poster.jpg)](https://ahamsel.com/assets/videos/webpilot_vid.mp4)
 
-[Watch the 85-second demo](https://raw.githubusercontent.com/ahamSel/WebPilot/main/docs/assets/webpilot-demo.mp4)
+[Watch the 85-second demo in your browser](https://ahamsel.com/assets/videos/webpilot_vid.mp4)
 
 ## Features
 
