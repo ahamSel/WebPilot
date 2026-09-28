@@ -31,12 +31,11 @@ let desktopRuntimeModules = null;
 let desktopRuntimeLoadError = null;
 let desktopRuntimeFallbackWarned = false;
 
-const GEMINI_PROVIDER = "gemini";
-const OPENAI_PROVIDER = "openai";
-const ANTHROPIC_PROVIDER = "anthropic";
+const OPENROUTER_PROVIDER = "openrouter";
 const OLLAMA_PROVIDER = "ollama";
-const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
+// Providers removed in favor of OpenRouter; their saved keys/models are reset.
+const LEGACY_PROVIDERS = new Set(["gemini", "google", "openai", "openai-compatible", "openai_compatible", "anthropic", "claude"]);
 const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
 const DESKTOP_COMMAND_CHANNEL = "desktop:app-command";
 
@@ -161,45 +160,24 @@ function bundledPlaywrightBrowsersPath() {
 
 function normalizeProvider(value) {
     const normalized = String(value || "").trim().toLowerCase();
-    if (normalized === "openai" || normalized === "openai-compatible" || normalized === "openai_compatible") {
-        return OPENAI_PROVIDER;
-    }
-    if (normalized === "anthropic" || normalized === "claude") {
-        return ANTHROPIC_PROVIDER;
-    }
-    if (normalized === "ollama") {
-        return OLLAMA_PROVIDER;
-    }
-    return GEMINI_PROVIDER;
+    if (normalized === "ollama") return OLLAMA_PROVIDER;
+    return OPENROUTER_PROVIDER;
+}
+
+function isLegacyProvider(value) {
+    return LEGACY_PROVIDERS.has(String(value || "").trim().toLowerCase());
 }
 
 function defaultBaseUrlForProvider(provider) {
-    if (provider === OPENAI_PROVIDER) return OPENAI_BASE_URL;
-    if (provider === ANTHROPIC_PROVIDER) return ANTHROPIC_BASE_URL;
-    if (provider === OLLAMA_PROVIDER) return OLLAMA_BASE_URL;
-    return "";
+    return provider === OLLAMA_PROVIDER ? OLLAMA_BASE_URL : OPENROUTER_BASE_URL;
 }
 
 function defaultModelsForProvider(provider) {
-    if (provider === GEMINI_PROVIDER) {
+    if (provider === OPENROUTER_PROVIDER) {
         return {
-            navModel: "gemini-2.5-flash",
-            synthModel: "gemini-2.5-pro",
-            reviewModel: "gemini-2.5-pro",
-        };
-    }
-    if (provider === OPENAI_PROVIDER) {
-        return {
-            navModel: "gpt-5-mini",
-            synthModel: "gpt-5.2",
-            reviewModel: "gpt-5.2",
-        };
-    }
-    if (provider === ANTHROPIC_PROVIDER) {
-        return {
-            navModel: "claude-haiku-4-5-20251001",
-            synthModel: "claude-sonnet-4-6",
-            reviewModel: "claude-sonnet-4-6",
+            navModel: "google/gemini-3.8-flash",
+            synthModel: "anthropic/claude-sonnet-5",
+            reviewModel: "google/gemini-3.8-flash",
         };
     }
     return {
@@ -692,71 +670,41 @@ function listDesktopBrowsers() {
 }
 
 function runtimeSettingsDefaults() {
-    const provider = normalizeProvider(
-        process.env.MODEL_PROVIDER ||
-        process.env.OPENAI_COMPAT_PROVIDER ||
-        process.env.ANTHROPIC_PROVIDER ||
-        (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_BASE_URL ? ANTHROPIC_PROVIDER :
-            process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? OPENAI_PROVIDER : GEMINI_PROVIDER)
-    );
+    const envProvider = process.env.MODEL_PROVIDER;
+    const provider = normalizeProvider(envProvider);
+    const useEnv = !isLegacyProvider(envProvider);
+    const env = (name) => (useEnv ? String(process.env[name] || "").trim() : "");
     const providerDefaults = defaultModelsForProvider(provider);
-    const navModel = String(
-        process.env.MODEL_NAV_MODEL ||
-        process.env.ANTHROPIC_NAV_MODEL ||
-        process.env.CLAUDE_NAV_MODEL ||
-        process.env.GEMINI_NAV_MODEL ||
-        process.env.MODEL_MODEL ||
-        process.env.ANTHROPIC_MODEL ||
-        process.env.CLAUDE_MODEL ||
-        process.env.GEMINI_MODEL ||
-        providerDefaults.navModel
-    ).trim();
-    const synthModel = String(
-        process.env.MODEL_SYNTH_MODEL ||
-        process.env.ANTHROPIC_SYNTH_MODEL ||
-        process.env.CLAUDE_SYNTH_MODEL ||
-        process.env.GEMINI_SYNTH_MODEL ||
-        providerDefaults.synthModel ||
-        navModel
-    ).trim();
-    const reviewModel = String(
-        process.env.MODEL_REVIEW_MODEL ||
-        process.env.ANTHROPIC_REVIEW_MODEL ||
-        process.env.CLAUDE_REVIEW_MODEL ||
-        process.env.GEMINI_REVIEW_MODEL ||
-        providerDefaults.reviewModel ||
-        synthModel
-    ).trim();
+    const navModel = env("MODEL_NAV_MODEL") || env("MODEL_MODEL") || providerDefaults.navModel;
+    const synthModel = env("MODEL_SYNTH_MODEL") || providerDefaults.synthModel || navModel;
+    const reviewModel = env("MODEL_REVIEW_MODEL") || providerDefaults.reviewModel || synthModel;
 
     return {
         provider,
         apiKey: "",
-        baseUrl: cleanBaseUrl(
-            process.env.MODEL_BASE_URL ||
-            process.env.ANTHROPIC_BASE_URL ||
-            process.env.OPENAI_COMPAT_BASE_URL ||
-            defaultBaseUrlForProvider(provider)
-        ),
+        baseUrl: cleanBaseUrl(env("MODEL_BASE_URL") || defaultBaseUrlForProvider(provider)),
         navModel,
         synthModel,
         reviewModel,
-        synthEnabled: boolFromInput(
-            process.env.MODEL_SYNTH_ENABLED ?? process.env.ANTHROPIC_SYNTH_ENABLED ?? process.env.CLAUDE_SYNTH_ENABLED ?? process.env.GEMINI_SYNTH_ENABLED,
-            true
-        ),
+        synthEnabled: boolFromInput(process.env.MODEL_SYNTH_ENABLED, true),
         browser: sanitizeBrowserSettings(),
     };
 }
 
 function sanitizeRuntimeSettings(value) {
-    const input = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
     const defaults = runtimeSettingsDefaults();
+    // Settings saved for Gemini/OpenAI/Claude migrate to OpenRouter defaults:
+    // their API keys and model ids are not valid there.
+    const input = isLegacyProvider(raw.provider)
+        ? { synthEnabled: raw.synthEnabled, browser: raw.browser }
+        : raw;
     const provider = normalizeProvider(input.provider || defaults.provider);
     const providerDefaults = defaultModelsForProvider(provider);
     return {
         provider,
         apiKey: typeof input.apiKey === "string" ? input.apiKey.trim() : defaults.apiKey,
-        baseUrl: typeof input.baseUrl === "string" ? cleanBaseUrl(input.baseUrl) : defaultBaseUrlForProvider(provider),
+        baseUrl: typeof input.baseUrl === "string" && input.baseUrl.trim() ? cleanBaseUrl(input.baseUrl) : defaultBaseUrlForProvider(provider),
         navModel: typeof input.navModel === "string" && input.navModel.trim() ? input.navModel.trim() : providerDefaults.navModel,
         synthModel: typeof input.synthModel === "string" && input.synthModel.trim() ? input.synthModel.trim() : providerDefaults.synthModel,
         reviewModel: typeof input.reviewModel === "string" && input.reviewModel.trim() ? input.reviewModel.trim() : providerDefaults.reviewModel,

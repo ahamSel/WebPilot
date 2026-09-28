@@ -1,7 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
 import {
     defaultBaseUrlForProvider,
     defaultModelsForProvider,
+    isLegacyProvider,
     normalizeProvider,
     type ModelProvider,
 } from "./runtime-provider-presets";
@@ -88,7 +88,7 @@ export interface ModelClient {
     generateText(options: GenerateTextOptions): Promise<string>;
 }
 
-interface OpenAiChatMessage {
+interface ChatMessage {
     role: "system" | "user" | "assistant" | "tool";
     content?: string | null;
     tool_calls?: Array<{
@@ -100,17 +100,16 @@ interface OpenAiChatMessage {
         };
     }>;
     tool_call_id?: string;
+    // Reasoning models on OpenRouter (Gemini 3, Claude, ...) require their
+    // reasoning blocks to be sent back unmodified across tool-call turns.
+    reasoning_details?: unknown[];
 }
 
-type AnthropicContentBlock =
-    | { type: "text"; text: string }
-    | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-    | { type: "tool_result"; tool_use_id: string; content: string };
-
-interface AnthropicMessage {
-    role: "user" | "assistant";
-    content: string | AnthropicContentBlock[];
-}
+const OPENROUTER_APP_URL = "https://github.com/ahamSel/WebPilot";
+const OPENROUTER_APP_TITLE = "WebPilot";
+const RETRYABLE_STATUSES = new Set([429, 502, 503]);
+const MAX_RETRIES = 2;
+const MAX_RETRY_DELAY_MS = 10_000;
 
 function boolFromInput(value: unknown, fallback: boolean): boolean {
     if (typeof value === "boolean") return value;
@@ -138,7 +137,7 @@ function optionalTrimmedString(value: unknown): string | undefined {
     return trimmed ? trimmed : undefined;
 }
 
-function buildOpenAiCompatibleUrl(baseUrl: string): string {
+export function buildChatCompletionsUrl(baseUrl: string): string {
     const clean = cleanBaseUrl(baseUrl);
     if (!clean) return "";
     if (clean.endsWith("/chat/completions")) return clean;
@@ -146,47 +145,11 @@ function buildOpenAiCompatibleUrl(baseUrl: string): string {
     return `${clean}/v1/chat/completions`;
 }
 
-function buildAnthropicUrl(baseUrl: string): string {
-    const clean = cleanBaseUrl(baseUrl);
-    if (!clean) return "";
-    if (clean.endsWith("/messages")) return clean;
-    if (clean.endsWith("/v1")) return `${clean}/messages`;
-    return `${clean}/v1/messages`;
-}
-
 function lowerCaseSchemaType(value: unknown): unknown {
     return normalizeJsonSchemaTypes(value, "lower");
 }
 
-function extractGeminiText(response: unknown): string {
-    const candidateParts = (response as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    })?.candidates?.[0]?.content?.parts;
-    const fromCandidates = Array.isArray(candidateParts)
-        ? candidateParts
-            .map((part) => (typeof part?.text === "string" ? part.text : ""))
-            .join("\n")
-            .trim()
-        : "";
-    const directText = typeof (response as { text?: string })?.text === "string"
-        ? (response as { text: string }).text.trim()
-        : "";
-    return directText || fromCandidates;
-}
-
-function extractGeminiFunctionCalls(response: unknown): ToolCall[] {
-    const rawCalls = Array.isArray((response as { functionCalls?: unknown[] })?.functionCalls)
-        ? (response as { functionCalls: Array<{ name?: string; args?: Record<string, unknown> }> }).functionCalls
-        : [];
-    return rawCalls
-        .filter((call) => typeof call?.name === "string" && call.name.trim())
-        .map((call) => ({
-            name: String(call.name),
-            args: typeof call.args === "object" && call.args ? call.args : {},
-        }));
-}
-
-function normalizeOpenAiContent(content: unknown): string {
+function normalizeContent(content: unknown): string {
     if (typeof content === "string") return content.trim();
     if (Array.isArray(content)) {
         return content
@@ -212,13 +175,43 @@ function stringifyToolResult(result: unknown): string {
     }
 }
 
-async function postOpenAiCompatibleJson(
+function providerDisplayName(provider: ModelProvider): string {
+    return provider === "ollama" ? "Ollama" : "OpenRouter";
+}
+
+function extractErrorMessage(text: string): string {
+    try {
+        const parsed = JSON.parse(text) as { error?: { message?: unknown } | string };
+        if (typeof parsed.error === "string") return parsed.error;
+        if (parsed.error && typeof parsed.error.message === "string") return parsed.error.message;
+    } catch {
+        // Not JSON; fall through to the raw text.
+    }
+    return text;
+}
+
+function retryDelayMs(response: Response, attempt: number): number {
+    const header = response.headers.get("retry-after");
+    const seconds = header ? Number(header) : NaN;
+    const delay = Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : 1000 * 2 ** attempt;
+    return Math.min(delay, MAX_RETRY_DELAY_MS);
+}
+
+/** Maps the planner's legacy thinking-token budget to an OpenRouter reasoning effort. */
+export function reasoningEffortForBudget(budget: number | undefined): "low" | "medium" | "high" | undefined {
+    if (typeof budget !== "number" || !Number.isFinite(budget) || budget <= 0) return undefined;
+    if (budget <= 1024) return "low";
+    if (budget <= 4096) return "medium";
+    return "high";
+}
+
+async function postChatCompletion(
     config: RuntimeModelConfig,
     body: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-    const url = buildOpenAiCompatibleUrl(config.baseUrl);
+    const url = buildChatCompletionsUrl(config.baseUrl);
     if (!url) {
-        throw new Error(`Missing base URL for ${config.provider} provider.`);
+        throw new Error(`Missing base URL for ${providerDisplayName(config.provider)}.`);
     }
 
     const headers: Record<string, string> = {
@@ -227,105 +220,55 @@ async function postOpenAiCompatibleJson(
     if (config.apiKey) {
         headers.Authorization = `Bearer ${config.apiKey}`;
     }
-
-    const response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(config.timeoutMs),
-    });
-
-    if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`${config.provider} request failed (${response.status}): ${text.slice(0, 400)}`);
+    if (config.provider === "openrouter") {
+        headers["HTTP-Referer"] = OPENROUTER_APP_URL;
+        headers["X-OpenRouter-Title"] = OPENROUTER_APP_TITLE;
     }
 
-    return await response.json();
-}
-
-async function postAnthropicJson(
-    config: RuntimeModelConfig,
-    body: Record<string, unknown>
-): Promise<Record<string, unknown>> {
-    const url = buildAnthropicUrl(config.baseUrl);
-    if (!url) {
-        throw new Error("Missing base URL for Anthropic provider.");
-    }
-    if (!config.apiKey) {
-        throw new Error("Missing Anthropic API key.");
-    }
-
-    const response = await fetch(url, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "x-api-key": config.apiKey,
-            "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(config.timeoutMs),
-    });
-
-    if (!response.ok) {
-        const text = await response.text().catch(() => "");
-        throw new Error(`Anthropic request failed (${response.status}): ${text.slice(0, 400)}`);
-    }
-
-    return await response.json();
-}
-
-class GeminiToolChat implements ToolChat {
-    private chat: ReturnType<GoogleGenAI["chats"]["create"]>;
-
-    constructor(private config: RuntimeModelConfig, options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
-        const ai = new GoogleGenAI({ apiKey: config.apiKey });
-        const tools = options.tools.map((tool) => normalizeToolDeclaration(tool, { typeCase: "upper" }));
-        this.chat = ai.chats.create({
-            model: options.model,
-            config: {
-                systemInstruction: options.systemInstruction,
-                tools: [{
-                    functionDeclarations: tools,
-                }],
-            },
+    const deadline = Date.now() + config.timeoutMs;
+    for (let attempt = 0; ; attempt++) {
+        const remainingMs = Math.max(1, deadline - Date.now());
+        const response = await fetch(url, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+            signal: AbortSignal.timeout(remainingMs),
         });
-    }
 
-    async sendMessage(message: string | ToolResponsePart[]): Promise<ToolChatResponse> {
-        const response = await this.chat.sendMessage({ message });
-        return {
-            text: extractGeminiText(response),
-            functionCalls: extractGeminiFunctionCalls(response),
-        };
-    }
-}
+        if (response.ok) {
+            const json = await response.json() as Record<string, unknown>;
+            // OpenRouter can report upstream failures inside a 200 response.
+            const error = json.error as { message?: unknown } | undefined;
+            if (error && !Array.isArray(json.choices)) {
+                throw new Error(`${providerDisplayName(config.provider)} request failed: ${String(error.message || "unknown error")}`);
+            }
+            return json;
+        }
 
-class GeminiModelClient implements ModelClient {
-    constructor(private config: RuntimeModelConfig) {}
+        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+            const delay = retryDelayMs(response, attempt);
+            if (Date.now() + delay < deadline) {
+                await response.body?.cancel().catch(() => {});
+                await new Promise((resolve) => setTimeout(resolve, delay));
+                continue;
+            }
+        }
 
-    createToolChat(options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }): ToolChat {
-        return new GeminiToolChat(this.config, options);
-    }
-
-    async generateText(options: GenerateTextOptions): Promise<string> {
-        const ai = new GoogleGenAI({ apiKey: this.config.apiKey });
-        const contents = options.systemInstruction
-            ? `${options.systemInstruction}\n\n${options.prompt}`
-            : options.prompt;
-        const config = typeof options.thinkingBudget === "number"
-            ? { thinkingConfig: { thinkingBudget: options.thinkingBudget } }
-            : undefined;
-        const response = await ai.models.generateContent({
-            model: options.model,
-            contents,
-            ...(config ? { config } : {}),
-        });
-        return extractGeminiText(response);
+        const text = await response.text().catch(() => "");
+        const message = extractErrorMessage(text).slice(0, 400);
+        throw new Error(`${providerDisplayName(config.provider)} request failed (${response.status}): ${message}`);
     }
 }
 
-class OpenAiCompatibleToolChat implements ToolChat {
-    private messages: OpenAiChatMessage[];
+function firstChoiceMessage(response: Record<string, unknown>): Record<string, unknown> {
+    const choice = Array.isArray(response.choices) ? response.choices[0] as Record<string, unknown> : undefined;
+    return choice && typeof choice.message === "object" && choice.message
+        ? choice.message as Record<string, unknown>
+        : {};
+}
+
+class ChatCompletionsToolChat implements ToolChat {
+    private messages: ChatMessage[];
     private tools: Array<{ type: "function"; function: Record<string, unknown> }>;
     private pendingToolCalls: Array<{ id: string; name: string }> = [];
 
@@ -359,23 +302,30 @@ class OpenAiCompatibleToolChat implements ToolChat {
             });
         }
 
-        const response = await postOpenAiCompatibleJson(this.config, {
+        const body: Record<string, unknown> = {
             model: this.options.model,
             messages: this.messages,
-            tools: this.tools,
-            tool_choice: this.tools.length ? "auto" : undefined,
-        });
+        };
+        if (this.tools.length) {
+            body.tools = this.tools;
+            // Ollama rejects tool_choice; "auto" is its default behavior anyway.
+            if (this.config.provider === "openrouter") body.tool_choice = "auto";
+        }
 
-        const choice = Array.isArray(response.choices) ? response.choices[0] as Record<string, unknown> : undefined;
-        const messageObj = choice && typeof choice.message === "object" ? choice.message as Record<string, unknown> : {};
+        const response = await postChatCompletion(this.config, body);
+        const messageObj = firstChoiceMessage(response);
         const toolCallsRaw = Array.isArray(messageObj.tool_calls) ? messageObj.tool_calls as Array<Record<string, unknown>> : [];
-        const text = normalizeOpenAiContent(messageObj.content);
+        const text = normalizeContent(messageObj.content);
+        const reasoningDetails = Array.isArray(messageObj.reasoning_details) && messageObj.reasoning_details.length
+            ? messageObj.reasoning_details as unknown[]
+            : undefined;
 
         if (toolCallsRaw.length) {
-            const assistantMessage: OpenAiChatMessage = {
+            const assistantMessage: ChatMessage = {
                 role: "assistant",
                 content: text || null,
                 tool_calls: [],
+                ...(reasoningDetails ? { reasoning_details: reasoningDetails } : {}),
             };
 
             const functionCalls: ToolCall[] = [];
@@ -385,7 +335,7 @@ class OpenAiCompatibleToolChat implements ToolChat {
                 const fn = typeof call.function === "object" && call.function ? call.function as Record<string, unknown> : {};
                 const id = typeof call.id === "string" && call.id ? call.id : `tool_call_${Date.now()}_${index}`;
                 const name = typeof fn.name === "string" ? fn.name : "";
-                const argText = typeof fn.arguments === "string" ? fn.arguments : "{}";
+                const argText = typeof fn.arguments === "string" && fn.arguments.trim() ? fn.arguments : "{}";
                 let args: Record<string, unknown> = {};
                 try {
                     const parsed = JSON.parse(argText);
@@ -413,206 +363,92 @@ class OpenAiCompatibleToolChat implements ToolChat {
         }
 
         this.pendingToolCalls = [];
-        this.messages.push({ role: "assistant", content: text || "" });
+        this.messages.push({
+            role: "assistant",
+            content: text || "",
+            ...(reasoningDetails ? { reasoning_details: reasoningDetails } : {}),
+        });
         return { text, functionCalls: [] };
     }
 }
 
-class OpenAiCompatibleModelClient implements ModelClient {
+class ChatCompletionsModelClient implements ModelClient {
     constructor(private config: RuntimeModelConfig) {}
 
     createToolChat(options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }): ToolChat {
-        return new OpenAiCompatibleToolChat(this.config, options);
+        return new ChatCompletionsToolChat(this.config, options);
     }
 
     async generateText(options: GenerateTextOptions): Promise<string> {
-        const messages: OpenAiChatMessage[] = [];
+        const messages: ChatMessage[] = [];
         if (options.systemInstruction) {
             messages.push({ role: "system", content: options.systemInstruction });
         }
         messages.push({ role: "user", content: options.prompt });
 
-        const response = await postOpenAiCompatibleJson(this.config, {
+        const body: Record<string, unknown> = {
             model: options.model,
             messages,
-        });
-
-        const choice = Array.isArray(response.choices) ? response.choices[0] as Record<string, unknown> : undefined;
-        const messageObj = choice && typeof choice.message === "object" ? choice.message as Record<string, unknown> : {};
-        return normalizeOpenAiContent(messageObj.content);
-    }
-}
-
-function extractAnthropicContentBlocks(response: Record<string, unknown>): AnthropicContentBlock[] {
-    const raw = Array.isArray(response.content) ? response.content as Array<Record<string, unknown>> : [];
-    return raw.flatMap((block): AnthropicContentBlock[] => {
-        if (block.type === "text" && typeof block.text === "string") {
-            return [{ type: "text", text: block.text }];
-        }
-        if (block.type === "tool_use" && typeof block.name === "string" && typeof block.id === "string") {
-            const input = block.input && typeof block.input === "object" && !Array.isArray(block.input)
-                ? block.input as Record<string, unknown>
-                : {};
-            return [{ type: "tool_use", id: block.id, name: block.name, input }];
-        }
-        return [];
-    });
-}
-
-function extractAnthropicText(blocks: AnthropicContentBlock[]): string {
-    return blocks
-        .filter((block): block is { type: "text"; text: string } => block.type === "text")
-        .map((block) => block.text)
-        .join("\n")
-        .trim();
-}
-
-class AnthropicToolChat implements ToolChat {
-    private messages: AnthropicMessage[] = [];
-    private tools: Array<{ name: string; description: string; input_schema: Record<string, unknown> }>;
-    private pendingToolCalls: Array<{ id: string; name: string }> = [];
-
-    constructor(private config: RuntimeModelConfig, private options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
-        this.tools = options.tools.map((rawTool) => {
-            const tool = normalizeToolDeclaration(rawTool, { typeCase: "lower" });
-            return {
-                name: tool.name,
-                description: tool.description,
-                input_schema: lowerCaseSchemaType(tool.parameters) as Record<string, unknown>,
-            };
-        });
-    }
-
-    async sendMessage(message: string | ToolResponsePart[]): Promise<ToolChatResponse> {
-        if (typeof message === "string") {
-            this.messages.push({ role: "user", content: message });
-        } else {
-            const content: AnthropicContentBlock[] = [];
-            message.forEach((part, index) => {
-                const pending = this.pendingToolCalls[index];
-                if (!pending) return;
-                content.push({
-                    type: "tool_result",
-                    tool_use_id: pending.id,
-                    content: stringifyToolResult(part.functionResponse.response),
-                });
-            });
-            if (content.length) {
-                this.messages.push({ role: "user", content });
-            }
+        };
+        const effort = reasoningEffortForBudget(options.thinkingBudget);
+        if (effort && this.config.provider === "openrouter") {
+            // OpenRouter ignores this for models without reasoning support.
+            body.reasoning = { effort, exclude: true };
         }
 
-        const response = await postAnthropicJson(this.config, {
-            model: this.options.model,
-            max_tokens: 4096,
-            system: this.options.systemInstruction,
-            messages: this.messages,
-            tools: this.tools,
-        });
-
-        const blocks = extractAnthropicContentBlocks(response);
-        const text = extractAnthropicText(blocks);
-        const functionCalls = blocks
-            .filter((block): block is { type: "tool_use"; id: string; name: string; input: Record<string, unknown> } => block.type === "tool_use")
-            .map((block) => ({ id: block.id, name: block.name, args: block.input }));
-
-        this.messages.push({ role: "assistant", content: blocks });
-        this.pendingToolCalls = functionCalls.map((call) => ({ id: call.id || "", name: call.name }));
-        return { text, functionCalls };
-    }
-}
-
-class AnthropicModelClient implements ModelClient {
-    constructor(private config: RuntimeModelConfig) {}
-
-    createToolChat(options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }): ToolChat {
-        return new AnthropicToolChat(this.config, options);
-    }
-
-    async generateText(options: GenerateTextOptions): Promise<string> {
-        const response = await postAnthropicJson(this.config, {
-            model: options.model,
-            max_tokens: 4096,
-            system: options.systemInstruction,
-            messages: [{ role: "user", content: options.prompt }],
-        });
-        return extractAnthropicText(extractAnthropicContentBlocks(response));
+        const response = await postChatCompletion(this.config, body);
+        return normalizeContent(firstChoiceMessage(response).content);
     }
 }
 
 export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {}): RuntimeModelConfig {
-    const overrideProvider = optionalTrimmedString(overrides.provider);
-    const overrideModel = optionalTrimmedString(overrides.model);
-    const overrideNavModel = optionalTrimmedString(overrides.navModel);
-    const overrideSynthModel = optionalTrimmedString(overrides.synthModel);
-    const overrideReviewModel = optionalTrimmedString(overrides.reviewModel);
-    const overrideApiKey = optionalTrimmedString(overrides.apiKey);
-    const overrideBaseUrl = optionalTrimmedString(overrides.baseUrl);
+    // Settings saved for a removed provider (Gemini, OpenAI, Claude) carry keys and
+    // model ids that do not work on OpenRouter, so fall back to defaults for them.
+    const legacyOverrides = isLegacyProvider(overrides.provider);
+    const pick = (value: unknown) => (legacyOverrides ? undefined : optionalTrimmedString(value));
 
-    const provider = normalizeProvider(
-        overrideProvider ||
-        process.env.MODEL_PROVIDER ||
-        process.env.OPENAI_COMPAT_PROVIDER ||
-        process.env.ANTHROPIC_PROVIDER ||
-        (process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_BASE_URL ? "anthropic" :
-            process.env.MODEL_BASE_URL || process.env.OPENAI_COMPAT_BASE_URL ? "openai-compatible" : "gemini")
-    );
+    const provider = normalizeProvider(optionalTrimmedString(overrides.provider) || process.env.MODEL_PROVIDER);
+    const envMatchesProvider = !isLegacyProvider(process.env.MODEL_PROVIDER)
+        && normalizeProvider(process.env.MODEL_PROVIDER) === provider;
+    const env = (name: string) => (envMatchesProvider ? optionalTrimmedString(process.env[name]) : undefined);
     const providerDefaults = defaultModelsForProvider(provider);
 
     const model = String(
-        overrideModel ||
-        process.env.MODEL_MODEL ||
-        process.env.ANTHROPIC_MODEL ||
-        process.env.CLAUDE_MODEL ||
-        process.env.GEMINI_MODEL ||
+        pick(overrides.model) ||
+        env("MODEL_MODEL") ||
         providerDefaults.navModel
     ).trim();
 
     const navModel = String(
-        overrideNavModel ||
-        process.env.MODEL_NAV_MODEL ||
-        process.env.ANTHROPIC_NAV_MODEL ||
-        process.env.CLAUDE_NAV_MODEL ||
-        process.env.GEMINI_NAV_MODEL ||
+        pick(overrides.navModel) ||
+        env("MODEL_NAV_MODEL") ||
         model
     ).trim();
 
     const synthModel = String(
-        overrideSynthModel ||
-        process.env.MODEL_SYNTH_MODEL ||
-        process.env.ANTHROPIC_SYNTH_MODEL ||
-        process.env.CLAUDE_SYNTH_MODEL ||
-        process.env.GEMINI_SYNTH_MODEL ||
+        pick(overrides.synthModel) ||
+        env("MODEL_SYNTH_MODEL") ||
         providerDefaults.synthModel ||
         navModel
     ).trim();
 
     const reviewModel = String(
-        overrideReviewModel ||
-        process.env.MODEL_REVIEW_MODEL ||
-        process.env.ANTHROPIC_REVIEW_MODEL ||
-        process.env.CLAUDE_REVIEW_MODEL ||
-        process.env.GEMINI_REVIEW_MODEL ||
+        pick(overrides.reviewModel) ||
+        env("MODEL_REVIEW_MODEL") ||
         providerDefaults.reviewModel ||
         synthModel
     ).trim();
 
     const apiKey = String(
-        overrideApiKey ??
-        process.env.MODEL_API_KEY ??
-        process.env.ANTHROPIC_API_KEY ??
-        process.env.CLAUDE_API_KEY ??
-        process.env.OPENAI_COMPAT_API_KEY ??
-        process.env.GEMINI_API_KEY ??
-        process.env.GOOGLE_API_KEY ??
+        pick(overrides.apiKey) ??
+        (provider === "openrouter" ? optionalTrimmedString(process.env.OPENROUTER_API_KEY) : undefined) ??
+        env("MODEL_API_KEY") ??
         ""
     ).trim();
 
     const baseUrl = cleanBaseUrl(
-        overrideBaseUrl ??
-        process.env.MODEL_BASE_URL ??
-        process.env.ANTHROPIC_BASE_URL ??
-        process.env.OPENAI_COMPAT_BASE_URL ??
+        pick(overrides.baseUrl) ??
+        env("MODEL_BASE_URL") ??
         defaultBaseUrlForProvider(provider)
     );
 
@@ -625,19 +461,11 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
         synthModel,
         reviewModel,
         synthEnabled: boolFromInput(
-            overrides.synthEnabled ??
-            process.env.MODEL_SYNTH_ENABLED ??
-            process.env.ANTHROPIC_SYNTH_ENABLED ??
-            process.env.CLAUDE_SYNTH_ENABLED ??
-            process.env.GEMINI_SYNTH_ENABLED,
+            overrides.synthEnabled ?? process.env.MODEL_SYNTH_ENABLED,
             true
         ),
         timeoutMs: toTimeoutMs(
-            overrides.timeoutMs ??
-            process.env.MODEL_TIMEOUT_MS ??
-            process.env.ANTHROPIC_TIMEOUT_MS ??
-            process.env.CLAUDE_TIMEOUT_MS ??
-            process.env.GEMINI_TIMEOUT_MS,
+            overrides.timeoutMs ?? process.env.MODEL_TIMEOUT_MS,
             120000
         ),
     };
@@ -657,24 +485,18 @@ export function getRuntimeModelSummary(config: RuntimeModelConfig): RuntimeModel
 }
 
 export function hasRuntimeCredentials(config: RuntimeModelConfig): boolean {
-    if (config.provider === "gemini") {
-        return !!config.apiKey;
-    }
-    if (config.provider === "openai") {
-        return !!config.apiKey;
-    }
-    if (config.provider === "anthropic") {
+    if (config.provider === "openrouter") {
         return !!config.apiKey;
     }
     return !!config.baseUrl;
 }
 
+export function missingCredentialsMessage(config: RuntimeModelConfig): string {
+    return config.provider === "openrouter"
+        ? "Missing OpenRouter API key. Add one in Settings."
+        : "Missing Ollama base URL. Check the Ollama settings.";
+}
+
 export function createModelClient(config: RuntimeModelConfig): ModelClient {
-    if (config.provider === "anthropic") {
-        return new AnthropicModelClient(config);
-    }
-    if (config.provider === "openai" || config.provider === "ollama") {
-        return new OpenAiCompatibleModelClient(config);
-    }
-    return new GeminiModelClient(config);
+    return new ChatCompletionsModelClient(config);
 }

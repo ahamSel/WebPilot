@@ -40,7 +40,7 @@ body:
     id: provider
     attributes:
       label: Model provider and model
-      placeholder: "Ollama llama3.1:8b, OpenAI gpt-4.1, Gemini..."
+      placeholder: "OpenRouter google/gemini-3.8-flash, Ollama qwen3:8b..."
     validations:
       required: false
   - type: input

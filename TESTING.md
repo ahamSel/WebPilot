@@ -10,13 +10,15 @@ node -c electron/preload.cjs
 npm run health
 ```
 
-## Tool Schema Tests
+## Unit Tests
 
 ```bash
 npm run test
 ```
 
 This verifies the versioned browser tool schema adapter against current WebPilot declarations, legacy MCP-style `input_schema`, OpenAI-style wrapped function declarations, missing optional fields, and unknown extension fields.
+
+It also covers the OpenRouter/Ollama model client with a mocked `fetch`: request URLs and headers, tool-call round trips including `reasoning_details`, retries on rate limits, error messages, migration of legacy Gemini/OpenAI/Claude settings, and parsing of the OpenRouter models catalog. No API key or network access is needed.
 
 ## Deterministic Browser Smoke
 
@@ -41,7 +43,7 @@ Then verify:
 curl -sS http://127.0.0.1:3000/api/agent
 curl -sS http://127.0.0.1:3000/api/runs
 curl -sS http://127.0.0.1:3000/api/threads
-curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=anthropic"
+curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=openrouter"
 curl -sS "http://127.0.0.1:3000/api/runtime/providers?provider=ollama"
 ```
 

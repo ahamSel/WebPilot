@@ -1,9 +1,11 @@
 import {
     defaultBaseUrlForProvider,
     defaultModelsForProvider,
+    isLegacyProvider,
     normalizeProvider,
     type ModelProvider,
     type OllamaDiscoveryResult,
+    type OpenRouterDiscoveryResult,
 } from "@/lib/runtime-provider-presets";
 import {
     DEFAULT_BROWSER_RUNTIME_SETTINGS,
@@ -71,10 +73,10 @@ export type DesktopAppCommand =
     | "navigate";
 
 export const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
-    provider: "gemini",
+    provider: "openrouter",
     apiKey: "",
-    baseUrl: defaultBaseUrlForProvider("gemini"),
-    ...defaultModelsForProvider("gemini"),
+    baseUrl: defaultBaseUrlForProvider("openrouter"),
+    ...defaultModelsForProvider("openrouter"),
     synthEnabled: true,
     browser: DEFAULT_BROWSER_RUNTIME_SETTINGS,
 };
@@ -112,15 +114,20 @@ function getDesktopBridge() {
 }
 
 function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
-    const input = value && typeof value === "object" && !Array.isArray(value)
+    const raw = value && typeof value === "object" && !Array.isArray(value)
         ? value as Partial<RuntimeSettings>
         : {};
+    // Gemini/OpenAI/Claude settings migrate to OpenRouter defaults; their keys
+    // and model ids are not valid there.
+    const input: Partial<RuntimeSettings> = isLegacyProvider(raw.provider)
+        ? { synthEnabled: raw.synthEnabled, browser: raw.browser }
+        : raw;
     const provider = normalizeProvider(input.provider);
     const modelDefaults = defaultModelsForProvider(provider);
     return {
         provider,
         apiKey: typeof input.apiKey === "string" ? input.apiKey : DEFAULT_RUNTIME_SETTINGS.apiKey,
-        baseUrl: typeof input.baseUrl === "string" ? input.baseUrl : defaultBaseUrlForProvider(provider),
+        baseUrl: typeof input.baseUrl === "string" && input.baseUrl.trim() ? input.baseUrl : defaultBaseUrlForProvider(provider),
         navModel: typeof input.navModel === "string" && input.navModel.trim() ? input.navModel.trim() : modelDefaults.navModel,
         synthModel: typeof input.synthModel === "string" && input.synthModel.trim() ? input.synthModel.trim() : modelDefaults.synthModel,
         reviewModel: typeof input.reviewModel === "string" && input.reviewModel.trim() ? input.reviewModel.trim() : modelDefaults.reviewModel,
@@ -332,7 +339,7 @@ export async function listBrowserOptionsClient(): Promise<BrowserDiscoveryResult
 
 export async function getRuntimeProviderDiscoveryClient(provider: ModelProvider): Promise<{
     provider: ModelProvider;
-    discovery?: OllamaDiscoveryResult;
+    discovery?: OllamaDiscoveryResult | OpenRouterDiscoveryResult;
 }> {
     return httpJson(`/api/runtime/providers?provider=${encodeURIComponent(provider)}`);
 }

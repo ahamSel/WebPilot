@@ -14,7 +14,7 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 
 - Desktop app built with Electron and Next.js.
 - Browser automation through Playwright MCP.
-- Model providers: Gemini, OpenAI, OpenAI-compatible endpoints, and Ollama.
+- Model providers: OpenRouter (one key for Gemini, Claude, GPT, Qwen, DeepSeek and hundreds more) and local Ollama.
 - Runtime settings UI for provider, model, browser source, profile strategy, headless mode, and isolation.
 - Local run recording with logs, step traces, artifacts, timing, and final results.
 - Thread history for follow-up tasks, with controls to delete individual runs, delete conversations, or clear saved history.
@@ -54,31 +54,20 @@ Only do this after downloading WebPilot from the official GitHub release and ver
 
 ## Model Setup In The App
 
-Open Settings, choose a provider, enter the provider key or local endpoint, choose a model, and save. The runtime settings UI supports Gemini, OpenAI, Claude, OpenAI-compatible endpoints, and Ollama.
+Open Settings, choose OpenRouter or Ollama, enter your OpenRouter key or local endpoint, choose models, and settings save automatically.
+
+OpenRouter gives one API key and one API for most hosted models. The settings screen lists every OpenRouter model that supports tool calling, with context size and pricing, and accepts any model id in `vendor/model` form (for example `google/gemini-3.8-flash` or `anthropic/claude-sonnet-5`).
+
+Settings saved for the older Gemini, OpenAI, and Claude providers are reset to OpenRouter defaults, because those keys and model ids do not work on OpenRouter. Enter an OpenRouter key after upgrading.
 
 Optional development defaults can be set with environment variables:
 
-Gemini:
+OpenRouter:
 
 ```bash
-GEMINI_API_KEY=...
-MODEL_PROVIDER=gemini
-```
-
-OpenAI:
-
-```bash
-MODEL_PROVIDER=openai
-MODEL_API_KEY=sk-...
-MODEL_BASE_URL=https://api.openai.com/v1
-```
-
-Claude:
-
-```bash
-MODEL_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-MODEL_BASE_URL=https://api.anthropic.com
+OPENROUTER_API_KEY=sk-or-...
+MODEL_NAV_MODEL=google/gemini-3.8-flash
+MODEL_SYNTH_MODEL=anthropic/claude-sonnet-5
 ```
 
 Ollama:

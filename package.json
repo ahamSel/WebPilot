@@ -34,7 +34,6 @@
     "desktop:build:signed": "npm run desktop:build:prepare && electron-builder"
   },
   "dependencies": {
-    "@google/genai": "^1.38.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@mozilla/readability": "^0.6.0",
     "@playwright/mcp": "^0.0.64",

@@ -154,7 +154,7 @@ Include:
 - unsigned/not-notarized macOS install instructions
 - Windows unsigned-build and SmartScreen warning note
 - Linux AppImage and `.zip` package status plus any native verification gaps
-- supported providers: Gemini, OpenAI, Claude, OpenAI-compatible, Ollama
+- supported providers: OpenRouter, Ollama
 - browser/profile support caveats
 - local data locations
 - security reporting link
