@@ -140,6 +140,29 @@ export function getManagedChromiumExecutablePath(): string {
     return chromium.executablePath();
 }
 
+export interface PlaywrightRuntimeStatus {
+    playwrightVersion?: string;
+    mcpServer: boolean;
+    chromiumInstalled: boolean;
+    error?: string;
+}
+
+/**
+ * Checks, without launching a browser, that the MCP server and the managed
+ * Chromium build can be found. Used by the packaged desktop smoke test.
+ */
+export async function getPlaywrightRuntimeStatus(): Promise<PlaywrightRuntimeStatus> {
+    const status: PlaywrightRuntimeStatus = { mcpServer: false, chromiumInstalled: false };
+    try {
+        status.playwrightVersion = (getPlaywrightRequire()("playwright/package.json") as { version: string }).version;
+        status.mcpServer = typeof (await getMcpCreateConnection()) === "function";
+        status.chromiumInstalled = isManagedChromiumInstalled();
+    } catch (error) {
+        status.error = error instanceof Error ? error.message : String(error);
+    }
+    return status;
+}
+
 export function isManagedChromiumInstalled(): boolean {
     try {
         const executablePath = getManagedChromiumExecutablePath();

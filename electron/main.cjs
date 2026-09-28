@@ -1160,6 +1160,9 @@ async function runDesktopSmokeAndQuit() {
         const runtime = runtimeLoadStatus();
         const settings = await readDesktopRuntimeSettings();
         const modules = loadDesktopRuntimeModules();
+        const playwright = typeof modules.agent?.getPlaywrightRuntimeStatus === "function"
+            ? await modules.agent.getPlaywrightRuntimeStatus()
+            : null;
         console.log(`[webpilot:desktop-smoke] ${JSON.stringify({
             platform: process.platform,
             isPackaged: app.isPackaged,
@@ -1168,6 +1171,7 @@ async function runDesktopSmokeAndQuit() {
             runtimeError: runtime.error,
             historyLoaded: Boolean(modules.history?.clearHistory && modules.history?.deleteHistoryRun),
             browser: settings.browser,
+            playwright,
         })}`);
     } finally {
         stopBundledNextServer();

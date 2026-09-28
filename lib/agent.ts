@@ -1580,6 +1580,8 @@ Tips:
     return startInfo;
 }
 
+export { getPlaywrightRuntimeStatus } from "./playwright-mcp-driver";
+
 export function getAgentState() {
     return state;
 }
