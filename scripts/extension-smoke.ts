@@ -19,13 +19,26 @@ import { startRealisticSites } from "./fixtures/realistic-sites.mjs";
 interface Case {
     id: string;
     start: (base: string) => string;
-    request: string;
+    request: string | ((base: string) => string);
     /** "allow" or "cancel" the confirmation card if it appears. */
     onConfirm?: "allow" | "cancel";
     check: (answer: string, actions: Array<{ type: string }>, confirmed: boolean, cart: string[]) => string | null;
 }
 
 const CASES: Case[] = [
+    {
+        // Chrome's own pages can't be debugged; the tab is navigated to the site first.
+        id: "from_blank_tab_with_site",
+        start: () => "about:blank",
+        request: (base) => `what's the cheapest 2-person tent at ${base}/shop ?`,
+        check: (answer) => (/Trailhead/i.test(answer) && /89\.99/.test(answer) ? null : "expected Trailhead 2P at $89.99"),
+    },
+    {
+        id: "from_blank_tab_no_site",
+        start: () => "about:blank",
+        request: "look up the Voyager 1 article on wikipedia and tell me its launch date",
+        check: (answer) => (/September 5,? 1977|5 September 1977/i.test(answer) ? null : "expected September 5, 1977"),
+    },
     {
         id: "current_page_question",
         start: (base) => `${base}/shop`,
@@ -75,7 +88,7 @@ async function runCase(context: BrowserContext, panel: Page, base: string, testC
     await panel.waitForSelector("textarea");
 
     const started = Date.now();
-    await panel.fill("textarea", testCase.request);
+    await panel.fill("textarea", typeof testCase.request === "function" ? testCase.request(base) : testCase.request);
     await panel.keyboard.press("Enter");
 
     let confirmed = false;
