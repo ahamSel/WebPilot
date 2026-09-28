@@ -31,6 +31,7 @@ import {
 } from "./browser-runtime";
 import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThreadOnRunStart } from "./threads";
 import { getBrowserToolDeclarations } from "./tool-schema";
+import { extractExplicitUrls } from "./goal-urls";
 
 // Env vars
 const DEFAULT_CDP_HTTP = "http://127.0.0.1:9222";
@@ -130,12 +131,6 @@ function nowIso() {
 function shortErr(e: any): string {
     const msg = e?.message || String(e);
     return msg.length > 600 ? msg.slice(0, 600) + "…" : msg;
-}
-
-function extractExplicitUrls(goal: string): string[] {
-    return Array.from(String(goal || "").matchAll(/https?:\/\/[^\s"'`<>]+/gi))
-        .map((match) => match[0])
-        .filter(Boolean);
 }
 
 function extractJsonObject(text: string): string | null {
