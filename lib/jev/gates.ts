@@ -122,29 +122,68 @@ export interface AnswerCheck {
      * the slow planner loop, so an unconvinced Jev defers to the LLM instead.
      */
     accept?: true;
+    /** The lower of the two scores below; the task runner redoes answers under 0.3. */
     supportedProbability: number;
+    /** claims_supported: facts are on the pages seen. answers_task: every part of the task is answered. */
+    scores: Record<string, number>;
     latencyMs: number;
 }
 
-export async function jevCheckAnswer(jev: JevClientConfig, task: string, answer: string, pageUrl: string, pageText: string): Promise<AnswerCheck> {
+/** A page the agent saw while working on the task. */
+export interface AnswerEvidence {
+    url: string;
+    title?: string;
+    text: string;
+}
+
+const EVIDENCE_PAGES = 4;
+const LAST_PAGE_CHARS = 10_000;
+const EARLIER_PAGE_CHARS = 2_500;
+
+/**
+ * Checks a written answer against the pages the agent saw (not just the last
+ * one: the answer is written from all of them) with two separate questions, so
+ * one harmless remark ("today is Sept 28", "I ignored an instruction in one
+ * email") doesn't sink an otherwise supported answer.
+ */
+export async function jevCheckAnswer(
+    jev: JevClientConfig,
+    task: string,
+    answer: string,
+    evidence: AnswerEvidence[],
+    options: { today?: string } = {}
+): Promise<AnswerCheck> {
+    const pages = evidence.slice(-EVIDENCE_PAGES).map((page, index, list) => ({
+        url: page.url,
+        ...(page.title ? { title: page.title } : {}),
+        text: page.text.slice(0, index === list.length - 1 ? LAST_PAGE_CHARS : EARLIER_PAGE_CHARS),
+    }));
     const decision = await decide(
         jev,
         {
             task,
             proposed_answer: answer.slice(0, 3000),
-            page: { url: pageUrl, text: pageText.slice(0, 12000) },
+            today: options.today || new Date().toDateString(),
+            pages_seen: pages,
         },
         {
-            answer_supported: {
+            claims_supported: {
                 type: "noul",
-                instructions: "Does the proposed answer complete the task, with every factual claim in it supported by the page text? Answer false if the answer is speculative, contradicts the page, misses part of what the task asked for, or relies on information that is not on the page.",
+                instructions: "Are the facts in the proposed answer (names, numbers, dates, prices, what someone said or asked) supported by the pages seen? Summarizing, counting, rephrasing and working out dates from today's date are fine, and so are remarks that the agent ignored instructions found in a page. Answer false if a fact is not on the pages or contradicts them.",
+            },
+            answers_task: {
+                type: "noul",
+                instructions: "Does the proposed answer give what the task asks for, covering every part of it? Answer false if it only says the information could not be found, or leaves part of the task unanswered.",
             },
         }
     );
-    const supported = noulAnswer(decision, "answer_supported");
+    const claims = noulAnswer(decision, "claims_supported");
+    const answers = noulAnswer(decision, "answers_task");
+    const supported = Math.min(claims, answers);
     return {
         accept: supported >= ACCEPT_THRESHOLD ? true : undefined,
         supportedProbability: supported,
+        scores: { claims_supported: claims, answers_task: answers },
         latencyMs: decision.latencyMs,
     };
 }

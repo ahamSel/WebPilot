@@ -41,7 +41,7 @@ Fast mode (Jev) is on by default.
   - Requests that find or read information use fast mode: Jev picks each click and scroll; the LLM writes typed text and the answer. When Jev is blocked, stuck or guessing, it asks the LLM for that one step and keeps driving, instead of handing the whole task over.
   - Requests with several separate parts ("when is X, and also when is Y") and requests that change something (buy, book, send, delete, submit) go to the LLM planner, which thinks and decides but hands legwork (opening results, emails, items; moving through lists) back to Jev as sub-goals with `delegate`.
   - Jev requests stay within its 32k-token context: crowded pages keep the elements most relevant to the task. If a Jev call fails, the LLM picks that step. The planner's older page views are trimmed to their text, so later steps stay fast.
-- Answers stream into the panel as they are written; Jev then checks them against the page, and an unsupported answer is redone (first by Jev looking closer, then by the model).
+- Answers stream into the panel as they are written; Jev then checks them against every page it saw (are the facts on those pages, and is every part of the request answered?), and an answer that fails is redone (first by Jev looking closer, then by the model).
 - Before an irreversible click (buy, place order, checkout, send, delete, publish, unsubscribe...) the panel shows **"Hold on — this can't be undone"** with Allow and Cancel. Cancel ends the task there; say "go ahead" to continue.
 - WebPilot never types into password, one-time-code or card fields and never makes up usernames or other personal details. On a sign-in page your password manager has already filled in, clicking "Log in" asks first (**"Hold on — sign in?"**); otherwise it asks you to sign in yourself and then continue.
 - A follow-up like "no, it's on Gmail" or "try again" continues a request that didn't finish.
@@ -94,6 +94,8 @@ npx tsx scripts/extension-bridge.ts feedback edge            # answers you rated
 npx tsx scripts/extension-bridge.ts targets chrome https://mail.google.com   # what blocks the debugger on a page
 npm run bench:fast-mode -- --engine extension --browser chrome --suite realistic --modes fast
 ```
+
+Jev's answer check (good answers kept, wrong, made-up, partial and falsely "not found" answers caught) has its own evaluation: `OPENROUTER_API_KEY=sk-or-... npm run eval:answer-check`.
 
 The smoke test also loads a stand-in for a password manager (`scripts/fixtures/frame-injector`) that puts its frame into pages opened with `?pm=1`, so the page-script path is tested too.
 
