@@ -1,0 +1,57 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # playwright and playwright-core must move together: the MCP server that
+      # drives the browser ships inside playwright-core. The contract test in
+      # tests/playwright-mcp-contract.test.ts fails if a tool WebPilot uses changes.
+      playwright:
+        patterns:
+          - playwright
+          - playwright-core
+      next-react:
+        patterns:
+          - next
+          - eslint-config-next
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+      electron:
+        patterns:
+          - electron
+          - electron-builder
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+        exclude-patterns:
+          - playwright
+          - playwright-core
+          - next
+          - eslint-config-next
+          - react
+          - react-dom
+          - electron
+          - electron-builder
+    ignore:
+      # Stable releases only; alpha/beta/next builds are opted into by hand.
+      - dependency-name: "*"
+        versions:
+          - "*-alpha*"
+          - "*-beta*"
+          - "*-next*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns:
+          - "*"

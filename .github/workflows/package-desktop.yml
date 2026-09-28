@@ -63,9 +63,15 @@ jobs:
       - name: Smoke test package
         run: ${{ matrix.smoke_script }}
 
+      - name: Artifact name
+        id: artifact
+        shell: bash
+        # Branch names can contain "/", which artifact names may not.
+        run: echo "suffix=${GITHUB_REF_NAME//\//-}" >> "$GITHUB_OUTPUT"
+
       - name: Upload package artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ matrix.artifact_name }}-${{ github.ref_name }}
+          name: ${{ matrix.artifact_name }}-${{ steps.artifact.outputs.suffix }}
           path: ${{ matrix.artifact_paths }}
           if-no-files-found: error

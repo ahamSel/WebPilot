@@ -18,6 +18,8 @@ npm run test
 
 This verifies the versioned browser tool schema adapter against current WebPilot declarations, legacy MCP-style `input_schema`, OpenAI-style wrapped function declarations, missing optional fields, and unknown extension fields.
 
+`tests/playwright-mcp-contract.test.ts` starts the Playwright MCP server (without launching a browser) and checks that every tool and argument WebPilot calls still exists, so a Playwright upgrade that renames one fails here.
+
 It also covers the OpenRouter/Ollama model client with a mocked `fetch`: request URLs and headers, tool-call round trips including `reasoning_details`, retries on rate limits, error messages, migration of legacy Gemini/OpenAI/Claude settings, and parsing of the OpenRouter models catalog. No API key or network access is needed.
 
 ## Deterministic Browser Smoke

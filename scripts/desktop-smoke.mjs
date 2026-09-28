@@ -147,6 +147,16 @@ try {
   assert(!result?.runtimeError, "Packaged app reported a desktop runtime load error.", result);
   assert(result?.historyLoaded === true, "Packaged app must include direct history deletion runtime methods.", result);
   assert(
+    result?.playwright?.mcpServer === true,
+    "Packaged app must load the Playwright MCP server from playwright-core.",
+    result?.playwright
+  );
+  assert(
+    result?.playwright?.chromiumInstalled === true,
+    "Packaged app must find its bundled Playwright Chromium.",
+    result?.playwright
+  );
+  assert(
     result?.browser?.headless === false,
     "Default packaged browser setting must be headed.",
     result?.browser
@@ -158,7 +168,7 @@ try {
     result
   );
 
-  console.log(`[desktop:smoke] Packaged ${process.platform} Electron app loaded with direct runtime, isolated data, dynamic port, and headed browser defaults.`);
+  console.log(`[desktop:smoke] Packaged ${process.platform} Electron app loaded with direct runtime, Playwright ${result.playwright.playwrightVersion} MCP server and bundled Chromium, isolated data, dynamic port, and headed browser defaults.`);
 } finally {
   if (reservedDefaultPort) {
     await new Promise((resolve) => reservedDefaultPort.close(resolve));

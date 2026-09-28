@@ -14,8 +14,8 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 
-# Install Chromium via @playwright/mcp's own playwright-core (version must match)
-RUN npx --prefix node_modules/@playwright/mcp playwright install chromium
+# Install the Chromium build that matches the pinned playwright/playwright-core
+RUN npx playwright install chromium
 
 # Copy source
 COPY . .
