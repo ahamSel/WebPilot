@@ -21,7 +21,7 @@ WebPilot is a local-first agentic browser. The public app has four main layers:
 
 - `lib/agent.ts`: sequential agent loop, model/tool orchestration, pause/stop handling, run finalization.
 - `lib/sub-agent.ts`: isolated parallel agents used for split multi-site tasks.
-- `lib/model-client.ts`: provider abstraction for Gemini, OpenAI, OpenAI-compatible endpoints, and Ollama.
+- `lib/model-client.ts`: one OpenAI-compatible chat-completions client used for both OpenRouter and Ollama.
 - `lib/tool-schema.ts`: versioned browser tool declarations and schema normalization for provider/MCP compatibility.
 - `lib/browser-runtime.ts`: browser/profile settings schema and sanitization.
 - `lib/playwright-mcp-driver.ts`: in-process Playwright MCP client, snapshot parsing, page text, and evidence extraction.
@@ -49,17 +49,16 @@ The browser layer is built around Playwright MCP. WebPilot can launch a managed 
 
 The agent exposes a stable WebPilot browser tool schema from `lib/tool-schema.ts` instead of scattering raw provider payloads through the runtime. The current schema version is `webpilot.browser-tools.v1`.
 
-`lib/model-client.ts` normalizes tool declarations before sending them to Gemini, OpenAI-compatible providers, Anthropic, or Ollama. The normalizer accepts current WebPilot `parameters`, MCP-style `inputSchema` or `input_schema`, and OpenAI-style wrapped `function` payloads. Unknown fields are preserved, missing optional fields get safe defaults, and provider-specific type casing is handled at the adapter boundary.
+`lib/model-client.ts` normalizes tool declarations before sending them to OpenRouter or Ollama. The normalizer accepts current WebPilot `parameters`, MCP-style `inputSchema` or `input_schema`, and OpenAI-style wrapped `function` payloads. Unknown fields are preserved, missing optional fields get safe defaults, and provider-specific type casing is handled at the adapter boundary.
 
 ## Model Providers
 
 The runtime provider abstraction keeps UI, API, and agent code independent of a single LLM vendor. The current public provider surface is:
 
-- Gemini via Google AI API key.
-- OpenAI via API key.
-- Claude via Anthropic API key.
-- OpenAI-compatible endpoints.
+- OpenRouter, which routes one API key to Gemini, Claude, GPT, Qwen, DeepSeek and most other hosted models.
 - Ollama local runtime.
+
+Both speak the OpenAI chat-completions format, so a single client handles them. OpenRouter-only extras are added at the adapter boundary: app attribution headers, reasoning effort for router/review calls, and passing `reasoning_details` back across tool turns (required by reasoning models such as Gemini 3). Rate-limited and temporarily unavailable responses (429/502/503) are retried within the call timeout.
 
 ## Desktop Packaging
 

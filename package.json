@@ -15,7 +15,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test tests/tool-schema.test.ts",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
     "health": "node scripts/health-check.js",
     "mcp:cli": "node scripts/mcp-cli.js",
     "agent:cli": "node scripts/agent-runner.js",
@@ -34,7 +34,6 @@
     "desktop:build:signed": "npm run desktop:build:prepare && electron-builder"
   },
   "dependencies": {
-    "@google/genai": "^1.38.0",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@mozilla/readability": "^0.6.0",
     "@playwright/mcp": "^0.0.64",

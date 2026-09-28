@@ -53,15 +53,13 @@ The compose file mounts `agent_runs/` and `agent_threads/` so local history surv
 
 ## Environment
 
-Required for cloud providers:
+Required for OpenRouter:
 
-- `GEMINI_API_KEY` for Gemini.
-- `MODEL_API_KEY` for OpenAI or compatible providers.
-- `ANTHROPIC_API_KEY` for Claude.
+- `OPENROUTER_API_KEY` (or `MODEL_API_KEY`).
 
 Optional:
 
-- `MODEL_PROVIDER=gemini|openai|anthropic|ollama`
+- `MODEL_PROVIDER=openrouter|ollama`
 - `MODEL_BASE_URL=...`
 - `MODEL_NAV_MODEL=...`
 - `MODEL_SYNTH_MODEL=...`

@@ -6,7 +6,7 @@
  * agent A could switch to tab 0, then agent B switches to tab 1 before A's
  * tool call executes, causing A's tool to run on the wrong tab.
  *
- * The mutex serializes all MCP operations while allowing Gemini API calls
+ * The mutex serializes all MCP operations while allowing model API calls
  * to run in true parallel (since those don't touch the browser).
  */
 

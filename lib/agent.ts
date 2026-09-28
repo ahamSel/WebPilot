@@ -18,6 +18,7 @@ import {
     createModelClient,
     getRuntimeModelSummary,
     hasRuntimeCredentials,
+    missingCredentialsMessage,
     resolveRuntimeModelConfig,
     type RuntimeModelConfig,
     type RuntimeModelOverrides,
@@ -852,13 +853,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
     const modelConfig = resolveRuntimeModelConfig(runtimeOverrides);
     const browserSettings = sanitizeBrowserRuntimeSettings(runtimeOverrides.browser);
     if (!hasRuntimeCredentials(modelConfig)) {
-        throw new Error(modelConfig.provider === "gemini"
-            ? "Missing Google AI API key."
-            : modelConfig.provider === "openai"
-                ? "Missing OpenAI API key."
-                : modelConfig.provider === "anthropic"
-                    ? "Missing Anthropic API key."
-                    : "Missing Ollama runtime configuration.");
+        throw new Error(missingCredentialsMessage(modelConfig));
     }
     if (state.status === "running" || runningPromise) throw new Error("Already running");
 
@@ -1237,7 +1232,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                                 thinkingBudget: 2048,
                             }),
                             modelConfig.timeoutMs,
-                            "Synthesis Gemini call"
+                            "Synthesis model call"
                         );
                         if (synthText && synthText.length > 50) {
                             log("info", "synth_complete", { durationMs: Date.now() - synthStart, resultLength: synthText.length });
@@ -1420,7 +1415,7 @@ Tips:
             });
 
             log("info", "model_call_starting", { message: "Calling planner..." });
-            const geminiStart = Date.now();
+            const plannerStart = Date.now();
             let response;
             try {
                 const initialObservationText = initialObservation?.snapshot
@@ -1433,10 +1428,10 @@ Tips:
                     modelConfig.timeoutMs,
                     "Initial planner call"
                 );
-                log("info", "model_call_complete", { durationMs: Date.now() - geminiStart });
-            } catch (geminiError: any) {
-                log("error", "model_call_failed", { error: shortErr(geminiError), durationMs: Date.now() - geminiStart });
-                throw geminiError;
+                log("info", "model_call_complete", { durationMs: Date.now() - plannerStart });
+            } catch (plannerError: any) {
+                log("error", "model_call_failed", { error: shortErr(plannerError), durationMs: Date.now() - plannerStart });
+                throw plannerError;
             }
 
             // ================================================================
@@ -1532,9 +1527,9 @@ Tips:
                         "Planner API call"
                     );
                     log("debug", "model_loop_call_complete", { durationMs: Date.now() - loopCallStart });
-                } catch (geminiLoopError: any) {
-                    log("error", "model_loop_call_failed", { error: shortErr(geminiLoopError), durationMs: Date.now() - loopCallStart });
-                    throw geminiLoopError;
+                } catch (loopError: any) {
+                    log("error", "model_loop_call_failed", { error: shortErr(loopError), durationMs: Date.now() - loopCallStart });
+                    throw loopError;
                 }
             }
 

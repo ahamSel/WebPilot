@@ -22,12 +22,13 @@ import {
   type ModelOption,
   type ModelProvider,
   type OllamaDiscoveryResult,
+  type OpenRouterDiscoveryResult,
 } from "@/lib/runtime-provider-presets";
 import { Input } from "@/components/ui/Input";
 import { Toggle } from "@/components/ui/Toggle";
 import { Badge } from "@/components/ui/Badge";
 import { ModelSelector } from "./ModelSelector";
-import { Eye, EyeOff } from "lucide-react";
+import { ExternalLink, Eye, EyeOff } from "lucide-react";
 
 type SaveStatus = "loading" | "saving" | "saved" | "error";
 type ProfileStorageMode = "temporary" | "dedicated" | "custom" | "isolated";
@@ -46,16 +47,36 @@ function profileStorageMode(browser: BrowserRuntimeSettings, defaultUserDataDir?
   return "custom";
 }
 
+function withDiscovered(suggested: ModelOption[], discovered: ModelOption[]): ModelOption[] {
+  // Suggested models first, enriched with live pricing/context when available.
+  const byId = new Map(discovered.map((model) => [model.value, model]));
+  const seen = new Set<string>();
+  const merged: ModelOption[] = [];
+  for (const model of [...suggested, ...discovered]) {
+    if (seen.has(model.value)) continue;
+    seen.add(model.value);
+    const live = byId.get(model.value);
+    merged.push(live ? { ...model, description: live.description || model.description } : model);
+  }
+  return merged;
+}
+
 function optionsForProvider(
   provider: ModelProvider,
-  ollamaDiscovery: OllamaDiscoveryResult | null
+  ollamaDiscovery: OllamaDiscoveryResult | null,
+  openRouterDiscovery: OpenRouterDiscoveryResult | null
 ): { nav: ModelOption[]; synth: ModelOption[]; review: ModelOption[] } {
   if (provider === "ollama") {
     const models = ollamaDiscovery?.models || [];
     return { nav: models, synth: models, review: models };
   }
   const preset = PROVIDER_PRESETS[provider];
-  return { nav: preset.navModels, synth: preset.synthModels, review: preset.reviewModels };
+  const discovered = openRouterDiscovery?.models || [];
+  return {
+    nav: withDiscovered(preset.navModels, discovered),
+    synth: withDiscovered(preset.synthModels, discovered),
+    review: withDiscovered(preset.reviewModels, discovered),
+  };
 }
 
 function currentBrowserChoice(
@@ -117,6 +138,7 @@ export function ProviderForm() {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("loading");
   const [saveError, setSaveError] = useState("");
   const [ollamaDiscovery, setOllamaDiscovery] = useState<OllamaDiscoveryResult | null>(null);
+  const [openRouterDiscovery, setOpenRouterDiscovery] = useState<OpenRouterDiscoveryResult | null>(null);
   const [browserDiscovery, setBrowserDiscovery] = useState<BrowserDiscoveryResult | null>(null);
   const [profileStorageSelection, setProfileStorageSelection] = useState<ProfileStorageMode | null>(null);
   const [showApiKey, setShowApiKey] = useState(false);
@@ -124,7 +146,8 @@ export function ProviderForm() {
 
   const provider = runtime.provider;
   const preset = PROVIDER_PRESETS[provider];
-  const modelOptions = optionsForProvider(provider, ollamaDiscovery);
+  const modelOptions = optionsForProvider(provider, ollamaDiscovery, openRouterDiscovery);
+  const openRouterIds = new Set((openRouterDiscovery?.models || []).map((model) => model.value));
   const browserProfiles = browserDiscovery?.profiles || [];
   const discoveredBrowsers = browserDiscovery?.browsers || [];
   const browserChoice = currentBrowserChoice(runtime.browser, discoveredBrowsers);
@@ -179,6 +202,26 @@ export function ProviderForm() {
   }, [runtime]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (provider !== "openrouter") {
+      setOpenRouterDiscovery(null);
+      return;
+    }
+
+    let cancelled = false;
+    getRuntimeProviderDiscoveryClient("openrouter")
+      .then((response) => {
+        if (!cancelled) setOpenRouterDiscovery((response.discovery as OpenRouterDiscoveryResult | undefined) || null);
+      })
+      .catch(() => {
+        if (!cancelled) setOpenRouterDiscovery(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [provider]);
+
+  useEffect(() => {
     if (provider !== "ollama") {
       setOllamaDiscovery(null);
       return;
@@ -188,7 +231,7 @@ export function ProviderForm() {
     getRuntimeProviderDiscoveryClient("ollama")
       .then((response) => {
         if (cancelled) return;
-        const discovery = response.discovery || {
+        const discovery = (response.discovery as OllamaDiscoveryResult | undefined) || {
           status: "unavailable" as const,
           message: "Could not load local Ollama models.",
           endpoint: "http://127.0.0.1:11434/api/tags",
@@ -363,9 +406,21 @@ export function ProviderForm() {
 
       {preset.apiKeyRequired && (
         <div>
-          <label className="block text-xs font-medium text-wp-text-secondary uppercase tracking-wider mb-2">
-            {preset.apiKeyLabel}
-          </label>
+          <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
+            <label className="text-xs font-medium text-wp-text-secondary uppercase tracking-wider">
+              {preset.apiKeyLabel}
+            </label>
+            {preset.apiKeyUrl && (
+              <a
+                href={preset.apiKeyUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[12px] text-wp-accent hover:underline"
+              >
+                Get a key <ExternalLink size={11} />
+              </a>
+            )}
+          </div>
           <div className="relative">
             <Input
               type={showApiKey ? "text" : "password"}
@@ -386,7 +441,7 @@ export function ProviderForm() {
         </div>
       )}
 
-      {provider !== "gemini" && (
+      {provider === "ollama" && (
         <div>
           <label className="block text-xs font-medium text-wp-text-secondary uppercase tracking-wider mb-2">
             Base URL
@@ -409,19 +464,30 @@ export function ProviderForm() {
             value={runtime.navModel || ""}
             options={modelOptions.nav}
             onChange={(v) => update({ navModel: v })}
+            searchable={provider === "openrouter"}
+            knownIds={openRouterIds}
           />
           <ModelSelector
             label="Synthesis"
             value={runtime.synthModel || ""}
             options={modelOptions.synth}
             onChange={(v) => update({ synthModel: v })}
+            searchable={provider === "openrouter"}
+            knownIds={openRouterIds}
           />
           <ModelSelector
             label="Review"
             value={runtime.reviewModel || ""}
             options={modelOptions.review}
             onChange={(v) => update({ reviewModel: v })}
+            searchable={provider === "openrouter"}
+            knownIds={openRouterIds}
           />
+          {provider === "openrouter" && openRouterDiscovery?.status === "unavailable" && (
+            <div className="min-w-0 rounded-[var(--wp-radius-sm)] border border-wp-border bg-wp-surface/60 px-2 py-1.5 text-[12px] text-wp-text-secondary">
+              {openRouterDiscovery.message}
+            </div>
+          )}
           {provider === "ollama" && ollamaDiscovery?.message && (
             <div className="min-w-0 rounded-[var(--wp-radius-sm)] border border-wp-border bg-wp-surface/60 px-2 py-1.5 text-[12px] text-wp-text-secondary">
               {ollamaDiscovery.message}

@@ -1,4 +1,4 @@
-export type ModelProvider = "gemini" | "openai" | "anthropic" | "ollama";
+export type ModelProvider = "openrouter" | "ollama";
 
 export interface ModelOption {
   value: string;
@@ -12,6 +12,7 @@ export interface ProviderPreset {
   apiKeyLabel: string;
   apiKeyPlaceholder: string;
   apiKeyRequired: boolean;
+  apiKeyUrl?: string;
   notes: string[];
   navModels: ModelOption[];
   synthModels: ModelOption[];
@@ -33,101 +34,77 @@ export interface OllamaDiscoveryResult {
   defaultModel?: string;
 }
 
+export interface OpenRouterModelOption extends ModelOption {
+  contextLength?: number;
+  promptPricePerMillion?: number;
+  completionPricePerMillion?: number;
+  inputModalities?: string[];
+  created?: number;
+}
+
+export interface OpenRouterDiscoveryResult {
+  status: "ready" | "unavailable";
+  message: string;
+  endpoint: string;
+  models: OpenRouterModelOption[];
+}
+
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 export const OLLAMA_BASE_URL = "http://127.0.0.1:11434/v1";
-export const OPENAI_BASE_URL = "https://api.openai.com/v1";
-export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
+const OPENROUTER_TOOL_MODELS_URL = `${OPENROUTER_BASE_URL}/models?supported_parameters=tools`;
 const OLLAMA_TAGS_URL = "http://127.0.0.1:11434/api/tags";
 const OLLAMA_SHOW_URL = "http://127.0.0.1:11434/api/show";
 
-const GEMINI_FLASH = "gemini-2.5-flash";
-const GEMINI_FLASH_LITE = "gemini-2.5-flash-lite";
-const GEMINI_PRO = "gemini-2.5-pro";
-const OPENAI_FAST = "gpt-5-mini";
-const OPENAI_CHEAP = "gpt-5-nano";
-const OPENAI_SMART = "gpt-5.2";
-const OPENAI_STABLE_FAST = "gpt-4.1-mini";
-const OPENAI_STABLE_SMART = "gpt-4.1";
-const CLAUDE_FAST = "claude-haiku-4-5-20251001";
-const CLAUDE_BALANCED = "claude-sonnet-4-6";
-const CLAUDE_SMART = "claude-opus-4-7";
+// OpenRouter model ids are "<vendor>/<model>". Any tool-capable model id works;
+// these are only the suggested defaults shown before live discovery loads.
+const OR_GEMINI_FLASH = "google/gemini-3.8-flash";
+const OR_GEMINI_FLASH_LITE = "google/gemini-3.5-flash-lite";
+const OR_CLAUDE_SONNET = "anthropic/claude-sonnet-5";
+const OR_CLAUDE_HAIKU = "anthropic/claude-haiku-4.5";
+const OR_GPT_LUNA = "openai/gpt-6-luna";
+const OR_GPT_SOL = "openai/gpt-6-sol";
+const OR_QWEN_FLASH = "qwen/qwen3.8-flash";
+const OR_DEEPSEEK_FLASH = "deepseek/deepseek-v4.1-flash";
+
+const LEGACY_PROVIDERS = new Set([
+  "gemini",
+  "google",
+  "openai",
+  "openai-compatible",
+  "openai_compatible",
+  "anthropic",
+  "claude",
+]);
 
 export const PROVIDER_PRESETS: Record<ModelProvider, ProviderPreset> = {
-  gemini: {
-    id: "gemini",
-    label: "Gemini",
-    apiKeyLabel: "Google AI API key",
-    apiKeyPlaceholder: "AIza...",
+  openrouter: {
+    id: "openrouter",
+    label: "OpenRouter",
+    apiKeyLabel: "OpenRouter API key",
+    apiKeyPlaceholder: "sk-or-...",
     apiKeyRequired: true,
+    apiKeyUrl: "https://openrouter.ai/settings/keys",
     notes: [
-      "Use a fast model for planning and a stronger model for synthesis/review.",
-      "Gemini 2.5 Flash is the default planner because it is fast and supports function calling.",
+      "One key gives access to Gemini, Claude, GPT, Qwen, DeepSeek and most other hosted models.",
+      "Only models that support tool calling are listed. Use a fast model for navigation and a stronger one for synthesis.",
     ],
     navModels: [
-      { value: GEMINI_FLASH_LITE, label: "Gemini 2.5 Flash-Lite", description: "Fastest and lowest cost." },
-      { value: GEMINI_FLASH, label: "Gemini 2.5 Flash", description: "Balanced default for planning." },
-      { value: GEMINI_PRO, label: "Gemini 2.5 Pro", description: "Stronger, slower reasoning." },
+      { value: OR_GEMINI_FLASH, label: "Gemini 3.8 Flash", description: "Fast default planner." },
+      { value: OR_GEMINI_FLASH_LITE, label: "Gemini 3.5 Flash-Lite", description: "Cheapest Gemini option." },
+      { value: OR_GPT_LUNA, label: "GPT-6 Luna", description: "Fast, very low cost." },
+      { value: OR_QWEN_FLASH, label: "Qwen 3.8 Flash", description: "Fast open-weight option." },
+      { value: OR_DEEPSEEK_FLASH, label: "DeepSeek V4.1 Flash", description: "Fast open-weight option." },
+      { value: OR_CLAUDE_HAIKU, label: "Claude Haiku 4.5", description: "Fast Claude planner." },
     ],
     synthModels: [
-      { value: GEMINI_FLASH, label: "Gemini 2.5 Flash", description: "Fast summarization." },
-      { value: GEMINI_PRO, label: "Gemini 2.5 Pro", description: "Best quality synthesis." },
+      { value: OR_CLAUDE_SONNET, label: "Claude Sonnet 5", description: "High-quality synthesis." },
+      { value: OR_GPT_SOL, label: "GPT-6 Sol", description: "Strong synthesis." },
+      { value: OR_GEMINI_FLASH, label: "Gemini 3.8 Flash", description: "Fast synthesis." },
     ],
     reviewModels: [
-      { value: GEMINI_FLASH, label: "Gemini 2.5 Flash", description: "Fast route review." },
-      { value: GEMINI_PRO, label: "Gemini 2.5 Pro", description: "Thorough review." },
-    ],
-  },
-  openai: {
-    id: "openai",
-    label: "OpenAI",
-    apiKeyLabel: "OpenAI API key",
-    apiKeyPlaceholder: "sk-...",
-    apiKeyRequired: true,
-    notes: [
-      "These are curated defaults instead of a freeform model field.",
-      "Planner defaults bias toward cheaper/faster models while synth/review can use stronger ones.",
-    ],
-    navModels: [
-      { value: OPENAI_CHEAP, label: "GPT-5 nano", description: "Cheapest and fastest." },
-      { value: OPENAI_FAST, label: "GPT-5 mini", description: "Fast default planner." },
-      { value: OPENAI_STABLE_FAST, label: "GPT-4.1 mini", description: "Stable fast alternative." },
-      { value: OPENAI_STABLE_SMART, label: "GPT-4.1", description: "Stronger non-reasoning model." },
-      { value: OPENAI_SMART, label: "GPT-5.2", description: "Highest quality option." },
-    ],
-    synthModels: [
-      { value: OPENAI_FAST, label: "GPT-5 mini", description: "Fast synthesis." },
-      { value: OPENAI_STABLE_SMART, label: "GPT-4.1", description: "Stable stronger synthesis." },
-      { value: OPENAI_SMART, label: "GPT-5.2", description: "Best quality synthesis." },
-    ],
-    reviewModels: [
-      { value: OPENAI_FAST, label: "GPT-5 mini", description: "Fast review." },
-      { value: OPENAI_STABLE_SMART, label: "GPT-4.1", description: "Stable stronger review." },
-      { value: OPENAI_SMART, label: "GPT-5.2", description: "Best quality review." },
-    ],
-  },
-  anthropic: {
-    id: "anthropic",
-    label: "Claude",
-    apiKeyLabel: "Anthropic API key",
-    apiKeyPlaceholder: "sk-ant-...",
-    apiKeyRequired: true,
-    notes: [
-      "Claude uses Anthropic's Messages API with native tool use.",
-      "Haiku 4.5 is the fast planner default; Sonnet 4.6 is the stronger synthesis/review default.",
-    ],
-    navModels: [
-      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast, lower-cost planner for interactive browsing." },
-      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "Best default for complex agentic tasks." },
-      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Strongest reasoning option." },
-    ],
-    synthModels: [
-      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast synthesis." },
-      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "High-quality synthesis." },
-      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Best quality synthesis." },
-    ],
-    reviewModels: [
-      { value: CLAUDE_FAST, label: "Claude Haiku 4.5", description: "Fast route review." },
-      { value: CLAUDE_BALANCED, label: "Claude Sonnet 4.6", description: "Thorough route review." },
-      { value: CLAUDE_SMART, label: "Claude Opus 4.7", description: "Deepest review." },
+      { value: OR_GEMINI_FLASH, label: "Gemini 3.8 Flash", description: "Fast review." },
+      { value: OR_CLAUDE_SONNET, label: "Claude Sonnet 5", description: "Thorough review." },
+      { value: OR_GPT_SOL, label: "GPT-6 Sol", description: "Thorough review." },
     ],
   },
   ollama: {
@@ -147,21 +124,22 @@ export const PROVIDER_PRESETS: Record<ModelProvider, ProviderPreset> = {
 };
 
 export function providerOrder(): ModelProvider[] {
-  return ["gemini", "openai", "anthropic", "ollama"];
+  return ["openrouter", "ollama"];
 }
 
 export function normalizeProvider(value: unknown): ModelProvider {
   const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "openai" || normalized === "openai-compatible" || normalized === "openai_compatible") {
-    return "openai";
-  }
-  if (normalized === "anthropic" || normalized === "claude") {
-    return "anthropic";
-  }
-  if (normalized === "ollama") {
-    return "ollama";
-  }
-  return "gemini";
+  if (normalized === "ollama") return "ollama";
+  return "openrouter";
+}
+
+/**
+ * True for providers from before the OpenRouter switch (Gemini, OpenAI, Claude).
+ * Their saved keys and model ids do not work on OpenRouter, so callers should
+ * reset them to OpenRouter defaults instead of carrying them over.
+ */
+export function isLegacyProvider(value: unknown): boolean {
+  return LEGACY_PROVIDERS.has(String(value || "").trim().toLowerCase());
 }
 
 export function providerLabel(provider: unknown): string {
@@ -169,34 +147,15 @@ export function providerLabel(provider: unknown): string {
 }
 
 export function defaultBaseUrlForProvider(provider: unknown): string {
-  const normalized = normalizeProvider(provider);
-  if (normalized === "openai") return OPENAI_BASE_URL;
-  if (normalized === "anthropic") return ANTHROPIC_BASE_URL;
-  if (normalized === "ollama") return OLLAMA_BASE_URL;
-  return "";
+  return normalizeProvider(provider) === "ollama" ? OLLAMA_BASE_URL : OPENROUTER_BASE_URL;
 }
 
 export function defaultModelsForProvider(provider: unknown) {
-  const normalized = normalizeProvider(provider);
-  if (normalized === "gemini") {
+  if (normalizeProvider(provider) === "openrouter") {
     return {
-      navModel: GEMINI_FLASH,
-      synthModel: GEMINI_PRO,
-      reviewModel: GEMINI_PRO,
-    };
-  }
-  if (normalized === "openai") {
-    return {
-      navModel: OPENAI_FAST,
-      synthModel: OPENAI_SMART,
-      reviewModel: OPENAI_SMART,
-    };
-  }
-  if (normalized === "anthropic") {
-    return {
-      navModel: CLAUDE_FAST,
-      synthModel: CLAUDE_BALANCED,
-      reviewModel: CLAUDE_BALANCED,
+      navModel: OR_GEMINI_FLASH,
+      synthModel: OR_CLAUDE_SONNET,
+      reviewModel: OR_GEMINI_FLASH,
     };
   }
   return {
@@ -204,6 +163,104 @@ export function defaultModelsForProvider(provider: unknown) {
     synthModel: "",
     reviewModel: "",
   };
+}
+
+const OPENROUTER_DISCOVERY_TTL_MS = 10 * 60 * 1000;
+let openRouterDiscoveryCache: { at: number; result: OpenRouterDiscoveryResult } | null = null;
+
+function perMillion(value: unknown): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed * 1_000_000;
+}
+
+function formatPrice(value: number | undefined): string {
+  if (value === undefined) return "";
+  if (value === 0) return "free";
+  return `$${Number(value.toFixed(value < 1 ? 3 : 2))}`;
+}
+
+export function parseOpenRouterModels(json: unknown): OpenRouterModelOption[] {
+  const data = (json as { data?: unknown })?.data;
+  if (!Array.isArray(data)) return [];
+  const models: OpenRouterModelOption[] = [];
+  for (const raw of data) {
+    if (!raw || typeof raw !== "object") continue;
+    const model = raw as Record<string, unknown>;
+    const id = typeof model.id === "string" ? model.id.trim() : "";
+    // Batch variants are async-only and never useful for interactive browsing.
+    if (!id || id.endsWith(":batch")) continue;
+    const pricing = (model.pricing && typeof model.pricing === "object" ? model.pricing : {}) as Record<string, unknown>;
+    const architecture = (model.architecture && typeof model.architecture === "object"
+      ? model.architecture
+      : {}) as Record<string, unknown>;
+    const promptPrice = perMillion(pricing.prompt);
+    const completionPrice = perMillion(pricing.completion);
+    const contextLength = typeof model.context_length === "number" ? model.context_length : undefined;
+    const inputModalities = Array.isArray(architecture.input_modalities)
+      ? architecture.input_modalities.filter((item): item is string => typeof item === "string")
+      : undefined;
+    const priceLabel = promptPrice === undefined
+      ? ""
+      : promptPrice === 0 && completionPrice === 0
+        ? "free"
+        : `${formatPrice(promptPrice)} in / ${formatPrice(completionPrice)} out per 1M`;
+    models.push({
+      value: id,
+      label: typeof model.name === "string" && model.name.trim() ? model.name.trim() : id,
+      description: [
+        contextLength ? `${Math.round(contextLength / 1000)}K context` : "",
+        priceLabel,
+      ].filter(Boolean).join(" · "),
+      contextLength,
+      promptPricePerMillion: promptPrice,
+      completionPricePerMillion: completionPrice,
+      inputModalities,
+      created: typeof model.created === "number" ? model.created : undefined,
+    });
+  }
+  return models.sort((left, right) => (right.created || 0) - (left.created || 0));
+}
+
+export async function discoverOpenRouterModels(options: { force?: boolean } = {}): Promise<OpenRouterDiscoveryResult> {
+  if (
+    !options.force &&
+    openRouterDiscoveryCache &&
+    Date.now() - openRouterDiscoveryCache.at < OPENROUTER_DISCOVERY_TTL_MS
+  ) {
+    return openRouterDiscoveryCache.result;
+  }
+
+  try {
+    // The models list is public, so discovery works before a key is entered.
+    const response = await fetch(OPENROUTER_TOOL_MODELS_URL, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!response.ok) {
+      return {
+        status: "unavailable",
+        message: `OpenRouter responded with ${response.status}. Showing suggested models only.`,
+        endpoint: OPENROUTER_TOOL_MODELS_URL,
+        models: [],
+      };
+    }
+    const models = parseOpenRouterModels(await response.json().catch(() => ({})));
+    const result: OpenRouterDiscoveryResult = {
+      status: "ready",
+      message: `${models.length} tool-capable OpenRouter models available.`,
+      endpoint: OPENROUTER_TOOL_MODELS_URL,
+      models,
+    };
+    openRouterDiscoveryCache = { at: Date.now(), result };
+    return result;
+  } catch {
+    return {
+      status: "unavailable",
+      message: "Could not reach OpenRouter. Showing suggested models only.",
+      endpoint: OPENROUTER_TOOL_MODELS_URL,
+      models: [],
+    };
+  }
 }
 
 function summarizeOllamaModel(details: Record<string, unknown> | null | undefined): string {
