@@ -150,8 +150,10 @@ export function parsePage(snapshotText: string, maxTextChars = 1500): PageModel 
         const inMain = landmarkStack.some((landmark) => landmark.role === "main");
 
         const ref = parsed.attrs.ref;
-        const isClick = CLICK_ROLES.has(parsed.role);
         const isType = TYPE_ROLES.has(parsed.role);
+        // `[clickable]`: no control role but clickable (e.g. Gmail's inbox rows),
+        // marked by the extension's page-script snapshots.
+        const isClick = CLICK_ROLES.has(parsed.role) || (parsed.attrs.clickable === "true" && !isType);
         if (ref && (isClick || isType) && !parsed.attrs.disabled) {
             const name = parsed.name || (isType ? "" : parsed.text);
             {

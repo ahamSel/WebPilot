@@ -6,6 +6,12 @@
  *
  * Element refs are `b<backendDOMNodeId>`, which stay valid for the lifetime of
  * the document, unlike Playwright refs that are renumbered on every snapshot.
+ * The extension's page-script driver builds the same node shape from the DOM
+ * and uses its own ref prefix, so refs from one driver never reach the other.
+ *
+ * Nodes with the (non-CDP) `clickable` property are elements that look clickable
+ * without a control role, such as Gmail's inbox rows; they get a ref and a
+ * `[clickable]` attribute.
  */
 
 export interface AXValue {
@@ -99,7 +105,8 @@ function yamlLine(indent: string, head: string, suffix = ""): string {
     return `${indent}- ${body}${suffix}`;
 }
 
-export function axTreeToSnapshot(nodes: AXNode[], page: { url: string; title: string }): string {
+export function axTreeToSnapshot(nodes: AXNode[], page: { url: string; title: string }, options: { refPrefix?: string } = {}): string {
+    const refPrefix = options.refPrefix || REF_PREFIX;
     const byId = new Map(nodes.map((node) => [node.nodeId, node]));
     const root = nodes.find((node) => !node.parentId) || nodes[0];
     const lines: string[] = [];
@@ -125,20 +132,22 @@ export function axTreeToSnapshot(nodes: AXNode[], page: { url: string; title: st
         }
 
         const interactive = INTERACTIVE_ROLES.has(role);
+        const clickable = !interactive && property(node, "clickable") === true;
         const attrs: string[] = [];
         const checked = property(node, "checked");
         if (checked === "true" || checked === true || checked === "mixed") attrs.push("[checked]");
         if (property(node, "disabled") === true) attrs.push("[disabled]");
         const level = property(node, "level");
         if (role === "heading" && typeof level === "number") attrs.push(`[level=${level}]`);
-        if (interactive && typeof node.backendDOMNodeId === "number") attrs.push(`[ref=${refForBackendNode(node.backendDOMNodeId)}]`);
+        if ((interactive || clickable) && typeof node.backendDOMNodeId === "number") attrs.push(`[ref=${refPrefix}${node.backendDOMNodeId}]`);
+        if (clickable) attrs.push("[clickable]");
 
         const head = `${role}${name ? ` ${quote(name)}` : ""}${attrs.length ? ` ${attrs.join(" ")}` : ""}`;
         const value = interactive ? text(node.value?.value) : "";
         const url = role === "link" ? text(property(node, "url")) : "";
 
         // A named control's text children only repeat its name.
-        const childNodes = interactive && name ? children.filter((child) => text(child.role?.value) !== "StaticText") : children;
+        const childNodes = (interactive || clickable) && name ? children.filter((child) => text(child.role?.value) !== "StaticText") : children;
         const hasBody = !!url || childNodes.length > 0;
 
         lines.push(yamlLine(indent, head, value ? `: ${value}` : hasBody ? ":" : ""));

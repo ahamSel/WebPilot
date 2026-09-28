@@ -12,13 +12,29 @@ export function isRestrictedUrl(url: string | undefined): boolean {
         || /^https:\/\/chrome\.google\.com\/webstore/i.test(url);
 }
 
+/** Commands that change the page; see `actionsSent`. */
+const ACTION_METHODS = /^(Input\.|Page\.navigate|Runtime\.callFunctionOn$)/;
+
+/**
+ * Attach errors that mean the page is fine but the debugger can't be used on it:
+ * another extension's frame is in the page (password managers, Grammarly...),
+ * or another tool is already debugging the tab.
+ */
+export function isDebuggerBlocked(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /chrome-extension:\/\/ URL of different extension|Another debugger is already attached/i.test(message);
+}
+
 /**
  * CDP transport over `chrome.debugger` for one tab. While attached, Chrome shows
  * a "WebPilot started debugging this browser" bar; `detach()` removes it.
  */
 export class DebuggerTransport implements CdpTransport {
     private listeners = new Set<(method: string, params: Record<string, unknown>) => void>();
-    private detachedReason: string | null = null;
+    /** Why Chrome detached the debugger, once it has. */
+    detachedReason: string | null = null;
+    /** Commands sent that change the page (input, navigation), to tell whether an interrupted action took effect. */
+    actionsSent = 0;
 
     private readonly onEventHandler = (source: chrome.debugger.Debuggee, method: string, params?: object) => {
         if (source.tabId !== this.tabId) return;
@@ -26,7 +42,10 @@ export class DebuggerTransport implements CdpTransport {
     };
 
     private readonly onDetachHandler = (source: chrome.debugger.Debuggee, reason: string) => {
-        if (source.tabId === this.tabId) this.detachedReason = reason;
+        if (source.tabId !== this.tabId) return;
+        this.detachedReason = reason;
+        // Lets waits in progress (e.g. for a page load) stop instead of timing out.
+        for (const listener of this.listeners) listener("Inspector.detached", { reason });
     };
 
     private constructor(public readonly tabId: number) {}
@@ -45,6 +64,7 @@ export class DebuggerTransport implements CdpTransport {
                 ? "Browser control was cancelled from Chrome's debugging bar."
                 : `Lost control of the tab (${this.detachedReason}).`);
         }
+        if (ACTION_METHODS.test(method)) this.actionsSent++;
         return await chrome.debugger.sendCommand({ tabId: this.tabId }, method, params) as T;
     }
 

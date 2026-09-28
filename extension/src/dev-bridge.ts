@@ -12,9 +12,11 @@
  */
 
 import type { TaskEvent } from "../../lib/core/run-task";
+import { listConversations, loadConversation } from "./conversations";
 import type { Engine } from "./engine";
 
 declare const __DEV_BRIDGE_TOKEN__: string;
+declare const __DEV_BUILD_ID__: string;
 
 const BRIDGE_URL = "http://127.0.0.1:4466";
 const RETRY_MS = 3000;
@@ -27,9 +29,16 @@ interface RunCommand {
     confirm?: "allow" | "deny";
     fastMode?: boolean;
     keepOpen?: boolean;
+    /** Follow-up messages sent after the first answer, in the same tab and conversation. */
+    followUps?: string[];
 }
 
-type Command = RunCommand | { id: string; type: "reload" } | { id: string; type: "ping" };
+type Command = RunCommand
+    | { id: string; type: "reload" }
+    | { id: string; type: "ping" }
+    | { id: string; type: "targets"; url: string }
+    | { id: string; type: "last"; index?: number }
+    | { id: string; type: "feedback"; limit?: number };
 
 function browserName(): string {
     const brands = (navigator as Navigator & { userAgentData?: { brands?: Array<{ brand: string }> } }).userAgentData?.brands || [];
@@ -72,30 +81,69 @@ async function runCommand(engine: Engine, command: RunCommand) {
         return;
     }
     if (command.url) await waitForTabComplete(tabId);
+    const hooks = {
+        overrides: typeof command.fastMode === "boolean" ? { fastMode: command.fastMode } : undefined,
+        // The task reports the confirmation itself (a "confirm" event); just answer it.
+        confirm: async () => command.confirm === "allow",
+        onEvent: (event: TaskEvent) => {
+            if (event.type === "answer-delta") return;
+            post("/bridge/event", { id: command.id, event }).catch(() => {});
+        },
+    };
     const started = Date.now();
     try {
-        const turn = await engine.run(tabId, command.goal, {
-            overrides: typeof command.fastMode === "boolean" ? { fastMode: command.fastMode } : undefined,
-            // The task reports the confirmation itself (a "confirm" event); just answer it.
-            confirm: async () => command.confirm === "allow",
-            onEvent: (event: TaskEvent) => {
-                if (event.type === "answer-delta") return;
-                post("/bridge/event", { id: command.id, event }).catch(() => {});
-            },
-        });
+        const turns = [];
+        for (const message of [command.goal, ...(command.followUps || [])]) {
+            if (turns.length) post("/bridge/event", { id: command.id, event: { type: "status", message: `Follow-up: ${message}` } }).catch(() => {});
+            const turnStarted = Date.now();
+            const turn = await engine.run(tabId, message, hooks);
+            turns.push({ user: message, answer: turn.answer || "", error: turn.error, mode: turn.mode, stats: turn.stats, durationMs: Date.now() - turnStarted });
+        }
+        const last = turns[turns.length - 1];
         await post("/bridge/result", {
             id: command.id,
-            answer: turn.answer || "",
-            error: turn.error,
-            mode: turn.mode,
-            stats: turn.stats,
-            steps: turn.steps.length,
+            answer: last.answer,
+            error: last.error,
+            mode: last.mode,
+            stats: last.stats,
+            steps: turns.length,
             durationMs: Date.now() - started,
+            ...(turns.length > 1 ? { turns } : {}),
         });
     } catch (error) {
         await post("/bridge/result", { id: command.id, error: error instanceof Error ? error.message : String(error) });
     } finally {
         if (!command.keepOpen && window?.id !== undefined) await chrome.windows.remove(window.id).catch(() => {});
+    }
+}
+
+/**
+ * Opens `url` in a new window and reports the debug targets that appeared with
+ * it (frames, workers), to see what stops chrome.debugger on a page.
+ */
+async function targetsCommand(command: { id: string; url: string }) {
+    const key = (target: chrome.debugger.TargetInfo) => `${target.type} ${target.id}`;
+    const before = new Set((await chrome.debugger.getTargets()).map(key));
+    const window = await chrome.windows.create({ url: command.url, focused: false, width: 1280, height: 860 });
+    const tabId = window?.tabs?.[0]?.id;
+    try {
+        if (tabId !== undefined) await waitForTabComplete(tabId);
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const targets = (await chrome.debugger.getTargets())
+            .filter((target) => !before.has(key(target)) || target.tabId === tabId)
+            .map(({ type, url, title, attached, tabId: targetTab, extensionId }) => ({ type, url: url.slice(0, 160), title, attached, tabId: targetTab, extensionId }));
+        let attachError = "";
+        if (tabId !== undefined) {
+            try {
+                await chrome.debugger.attach({ tabId }, "1.3");
+                await chrome.debugger.detach({ tabId });
+            } catch (error) {
+                attachError = error instanceof Error ? error.message : String(error);
+            }
+        }
+        await post("/bridge/result", { id: command.id, targets, attachError });
+    } finally {
+        if (window?.id !== undefined) await chrome.windows.remove(window.id).catch(() => {});
     }
 }
 
@@ -122,12 +170,34 @@ async function pollLoop(engine: Engine) {
             }
             const command = await response.json() as Command;
             if (command.type === "ping") {
-                await post("/bridge/result", { id: command.id, client, version: chrome.runtime.getManifest().version }).catch(() => {});
+                await post("/bridge/result", { id: command.id, client, version: chrome.runtime.getManifest().version, build: __DEV_BUILD_ID__ }).catch(() => {});
             } else if (command.type === "reload") {
                 await post("/bridge/result", { id: command.id, reloading: true }).catch(() => {});
                 chrome.runtime.reload();
             } else if (command.type === "run") {
                 runCommand(engine, command).catch(() => {});
+            } else if (command.type === "last") {
+                // The user's most recent conversations, to debug a run they did by hand.
+                const summaries = await listConversations();
+                const summary = summaries[command.index || 0];
+                const conversation = summary ? await loadConversation(summary.id) : null;
+                await post("/bridge/result", { id: command.id, recent: summaries.slice(0, 5), conversation }).catch(() => {});
+            } else if (command.type === "feedback") {
+                // Answers the user rated or commented on, newest first, with their traces
+                // and the turns just before them for context.
+                const items = [];
+                for (const summary of await listConversations()) {
+                    const conversation = await loadConversation(summary.id);
+                    for (const [index, turn] of (conversation?.turns || []).entries()) {
+                        if (!turn.feedback) continue;
+                        const earlier = conversation!.turns.slice(Math.max(0, index - 2), index).map((item) => ({ user: item.user, answer: item.answer?.slice(0, 400), error: item.error }));
+                        items.push({ conversationId: summary.id, conversationTitle: summary.title, earlier, turn });
+                    }
+                }
+                items.sort((left, right) => (right.turn.feedback?.at || 0) - (left.turn.feedback?.at || 0));
+                await post("/bridge/result", { id: command.id, items: items.slice(0, command.limit || 20) }).catch(() => {});
+            } else if (command.type === "targets") {
+                targetsCommand(command).catch((error) => post("/bridge/result", { id: command.id, error: String(error) }).catch(() => {}));
             }
         }
     } finally {

@@ -170,10 +170,68 @@ function FlightLog({ turn, live }: { turn: Turn; live: boolean }) {
     );
 }
 
+function ThumbIcon({ down }: { down?: boolean }) {
+    return (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={down ? { transform: "scaleY(-1)" } : undefined}>
+            <path d="M7 10v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h3Zm0 0 4-7a2.5 2.5 0 0 1 3 2.6L13.5 10H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 21H7" />
+        </svg>
+    );
+}
+
+/**
+ * Thumbs up/down and an optional note on an answer. Saved locally with the
+ * conversation and its trace, so problems can be looked into later.
+ */
+function Feedback({ turn, onSend }: { turn: Turn; onSend: (rating: "up" | "down" | undefined, note?: string) => void }) {
+    const [writing, setWriting] = useState(false);
+    const [note, setNote] = useState("");
+    const rating = turn.feedback?.rating;
+    const save = () => {
+        if (note.trim()) onSend(undefined, note.trim());
+        setNote("");
+        setWriting(false);
+    };
+    return (
+        <div className="feedback">
+            <div className="feedback-row">
+                <button className={`icon-button small${rating === "up" ? " on up" : ""}`} aria-label="Good answer" aria-pressed={rating === "up"} onClick={() => onSend("up")}>
+                    <ThumbIcon />
+                </button>
+                <button
+                    className={`icon-button small${rating === "down" ? " on down" : ""}`}
+                    aria-label="Something was off"
+                    aria-pressed={rating === "down"}
+                    onClick={() => {
+                        onSend("down");
+                        setWriting(true);
+                    }}
+                >
+                    <ThumbIcon down />
+                </button>
+                {!writing && <button className="link-button" onClick={() => setWriting(true)}>{turn.feedback?.note ? "Add to note" : "Add a note"}</button>}
+            </div>
+            {turn.feedback?.note && <div className="feedback-note">{turn.feedback.note}</div>}
+            {writing && (
+                <form className="feedback-form" onSubmit={(event) => { event.preventDefault(); save(); }}>
+                    <input
+                        autoFocus
+                        value={note}
+                        placeholder="What was off, or what would be better?"
+                        onChange={(event) => setNote(event.target.value)}
+                        onKeyDown={(event) => { if (event.key === "Escape") setWriting(false); }}
+                    />
+                    <button className="btn" type="submit">Save</button>
+                </form>
+            )}
+        </div>
+    );
+}
+
 function ConfirmCard({ pending, onAnswer }: { pending: PendingConfirm; onAnswer: (allowed: boolean) => void }) {
+    const signIn = /\bto sign in\b/.test(pending.action);
     return (
         <div className="confirm" role="alertdialog" aria-label="Confirm action">
-            <h3>Hold on — this can&apos;t be undone</h3>
+            <h3>{signIn ? "Hold on — sign in?" : "Hold on — this can\u2019t be undone"}</h3>
             <p>
                 WebPilot wants to click <span className="action">{pending.action}</span> on {hostOf(pending.url)}.
             </p>
@@ -326,6 +384,13 @@ function App() {
     const send = (message: PanelMessage) => portRef.current?.postMessage(message);
 
     const run = (goal: string) => {
+        // "/feedback ..." (or "/fb ...") notes something about the last answer without running a task.
+        const feedbackNote = goal.trim().match(/^\/(?:feedback|fb)\b\s*([\s\S]*)$/i);
+        if (feedbackNote) {
+            if (feedbackNote[1].trim()) send({ type: "feedback", note: feedbackNote[1].trim() });
+            setInput("");
+            return;
+        }
         if (!settings || !goal.trim() || running) return;
         if (!settings.apiKey) {
             setView("settings");
@@ -415,6 +480,9 @@ function App() {
                                 </div>
                             )}
                             {turn.error && <div className="answer error">{turn.error}</div>}
+                            {turn.finishedAt && (turn.answer || turn.error) && (
+                                <Feedback turn={turn} onSend={(rating, note) => send({ type: "feedback", turnId: turn.id, rating, note })} />
+                            )}
                         </div>
                     );
                 })}

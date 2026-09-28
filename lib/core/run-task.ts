@@ -15,7 +15,7 @@ import { extractExplicitUrls } from "../goal-urls";
 import { runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult } from "../jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../jev/gates";
 import { describeElement, parsePage, selectCandidates, type PageModel } from "../jev/page";
-import { UNTRUSTED_CONTENT_RULE, irreversibleAction } from "../safety";
+import { CREDENTIALS_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
 import { getBrowserToolDeclarations } from "../tool-schema";
 
 export interface TaskBrowser extends FastModeBrowser {
@@ -44,6 +44,11 @@ export interface RunTaskOptions {
     /** Ask the user before an irreversible click; resolve false to cancel it. */
     confirm: (action: string, pageUrl: string) => Promise<boolean>;
     onEvent?: (event: TaskEvent) => void;
+    /**
+     * Technical trace for troubleshooting: routing decisions, each Jev decision
+     * with its probabilities and timing, answer checks, planner tool results.
+     */
+    onTrace?: (kind: string, data: Record<string, unknown>) => void;
     signal?: AbortSignal;
     maxPlannerSteps?: number;
     /**
@@ -90,13 +95,28 @@ class ActionDeclinedError extends Error {
 }
 
 export class TaskCancelledError extends Error {
-    constructor(public stats: { steps: number; jevCalls: number; llmCalls: number } = { steps: 0, jevCalls: 0, llmCalls: 0 }) {
+    constructor(public stats: { steps: number; jevCalls: number; llmCalls: number } = { steps: 0, jevCalls: 0, llmCalls: 0 }, public memory?: TaskMemory) {
         super("Stopped by user.");
         this.name = "TaskCancelledError";
     }
 }
 
+/** A task that failed partway; `memory` records how far it got, for follow-ups. */
+export class TaskFailedError extends Error {
+    constructor(message: string, public memory: TaskMemory, public stats: { steps: number; jevCalls: number; llmCalls: number }) {
+        super(message);
+        this.name = "TaskFailedError";
+    }
+}
+
 const FAST_ANSWER_ACCEPT = 0.8;
+/**
+ * Page text the planner sees per observation. Enough for an email thread or an
+ * article section, so it reads instead of scrolling (fast mode's Jev state stays small).
+ */
+const PLANNER_TEXT_CHARS = 8000;
+/** After this long, the planner is asked to wrap up with what it has. */
+const PLANNER_WRAP_UP_MS = 60_000;
 const FAST_ANSWER_ESCALATE_BELOW = 0.3;
 
 function isWebPage(url: string): boolean {
@@ -135,8 +155,8 @@ function formatHistory(history: RunTaskOptions["history"]): string {
 /** Compact page view for the LLM planner: numbered actionable elements plus text. */
 function plannerObservation(page: PageModel, task: string): string {
     const { selected, truncated } = selectCandidates(page.elements, task, 150);
-    const elements = selected.map((element) => `[${element.ref}] ${describeElement(element, page.url)}`).join("\n");
-    return `Page: ${page.title} (${page.url})\nElements${truncated ? " (trimmed to the most relevant)" : ""}:\n${elements || "(none)"}\n\nText:\n${page.text.slice(0, 4000)}`;
+    const elements = selected.map((element) => `[${element.ref}] ${describeElement(element, page.url)}${element.kind === "type" && isSecretField(element) ? " (the user fills this in)" : ""}`).join("\n");
+    return `Page: ${page.title} (${page.url})\nElements${truncated ? " (trimmed to the most relevant)" : ""}:\n${elements || "(none)"}\n\nText:\n${page.text}`;
 }
 
 interface TaskStats {
@@ -149,11 +169,21 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
     const stats: TaskStats = { steps: 0, jevCalls: 0, llmCalls: 0 };
     const memory: TaskMemory = { visited: [], actions: [] };
     const started = Date.now();
+    // Where the browser ended up, so a follow-up ("try again", "go ahead") can continue.
+    const recordEnd = async () => {
+        if (!memory.visited.length && !memory.actions.length) return;
+        const page = await options.browser.pageInfo().catch(() => ({ url: "", title: "" }));
+        memory.finalUrl = page.url || undefined;
+        memory.finalTitle = page.title || undefined;
+    };
     try {
         return await runTaskInner({ ...options, config: { ...options.config, signal: options.signal } }, stats, memory);
     } catch (error) {
         // Stopping aborts in-flight model and Jev requests; report it as a stop.
-        if (options.signal?.aborted) throw new TaskCancelledError({ ...stats });
+        if (options.signal?.aborted || error instanceof TaskCancelledError) {
+            await recordEnd();
+            throw new TaskCancelledError({ ...stats }, memory);
+        }
         if (error instanceof ActionDeclinedError) {
             // Cancel on a confirmation ends the task, remembering how far it got so a
             // follow-up like "ok, go ahead" can continue.
@@ -165,7 +195,8 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             options.onEvent?.({ type: "done", answer, mode: "planner" });
             return { answer, mode: "planner", memory, ...stats, durationMs: Date.now() - started };
         }
-        throw error;
+        await recordEnd();
+        throw new TaskFailedError(error instanceof Error ? error.message : String(error), memory, { ...stats });
     }
 }
 
@@ -173,6 +204,7 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
     const started = Date.now();
     const { config, browser, goal } = options;
     let browsed = false;
+    const trace = (kind: string, data: Record<string, unknown>) => options.onTrace?.(kind, data);
     const emit = (event: TaskEvent) => {
         if (event.type === "step") {
             memory.actions = [...memory.actions, `${event.action}${event.detail ? ` ${event.detail}` : ""}`.slice(0, 160)].slice(-MEMORY_ACTIONS);
@@ -218,6 +250,7 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
     if (jev && !conversation) {
         try {
             const preflight = await jevPreflight(jev, goal, "", isWebPage(current.url) ? current : undefined);
+            trace("preflight", { ...preflight });
             stats.jevCalls++;
             browse = preflight.browse;
             changesSomething = preflight.changesSomething;
@@ -239,6 +272,8 @@ User message: ${goal}
 
 Use "chat" when no browser action or live page is needed (greetings, questions about you, things answerable from the conversation). Use "browse" otherwise, including questions about the current page. For "browse", write browser_goal as a self-contained task that resolves references to the conversation. When the request continues earlier work (the browser state after each turn is noted) and the current tab no longer shows the page it needs, include that page's full URL in browser_goal.
 
+When an earlier request did not finish, or the user corrects or adds to one ("no, it's on Gmail", "try again", "use Amazon instead"), use "browse" with browser_goal set to that earlier request with the correction applied. Don't ask whether to go ahead with something the user already asked for; do it.
+
 "changes_something" is true when the task buys, orders, books, sends, posts, deletes, subscribes or submits something (not just finding or reading).
 
 {"mode": "chat|browse", "reply": "full reply when chat", "browser_goal": "task when browse", "changes_something": false}`,
@@ -246,6 +281,7 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
         });
         stats.llmCalls++;
         const route = extractJson(routeText);
+        trace("route", route ? { mode: route.mode, browser_goal: route.browser_goal, changes_something: route.changes_something } : { unparsed: routeText.slice(0, 300) });
         if (route?.mode === "chat" && typeof route.reply === "string" && route.reply.trim()) {
             return finish(route.reply.trim(), "chat");
         }
@@ -272,13 +308,20 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
         });
         stats.llmCalls++;
         let url = extractExplicitUrls(suggestion)[0];
+        trace("start_page", { suggestion: suggestion.trim().slice(0, 200) });
         if ((!url || /\bSTAY\b/.test(suggestion)) && onWebPage) url = "";
-        if (!url && !onWebPage) {
-            url = (options.fallbackSearchUrl || "https://www.google.com/search?q={query}").replace("{query}", encodeURIComponent(browserGoal));
-        }
+        const searchUrl = (options.fallbackSearchUrl || "https://www.google.com/search?q={query}").replace("{query}", encodeURIComponent(browserGoal));
+        if (!url && !onWebPage) url = searchUrl;
         if (url) {
             emit({ type: "step", source: "llm", action: "navigate", detail: url, url });
-            await browser.navigate(url);
+            try {
+                await browser.navigate(url);
+            } catch (error) {
+                // A guessed site that doesn't load (dead host, typo): search instead.
+                if (url === searchUrl || options.signal?.aborted) throw error;
+                emit({ type: "step", source: "llm", action: "navigate", detail: searchUrl, url: searchUrl });
+                await browser.navigate(searchUrl);
+            }
             stats.steps++;
         }
     }
@@ -301,6 +344,7 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
         try {
             supported = (await jevCheckAnswer(jev, goal, answer, current.url, pageText)).supportedProbability;
             stats.jevCalls++;
+            trace("answer_check", { from: "current_page", supported });
         } catch {
             // Keep the answer if the check itself fails.
         }
@@ -330,9 +374,10 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
             writer: llm,
             writerModel: config.navModel,
             writerTimeoutMs: config.timeoutMs,
-            log: (_level, action) => {
+            log: (_level, action, data) => {
                 if (action === "jev_decision") stats.jevCalls++;
                 if (action === "fast_mode_text_written") stats.llmCalls++;
+                trace(action, { pass, ...(data && typeof data === "object" ? data as Record<string, unknown> : {}) });
             },
             checkStop: checkCancelled,
             confirm: confirmOrCancel,
@@ -358,6 +403,7 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
                 const check = await jevCheckAnswer(jev, browserGoal, answer, fast.page.url, pageText);
                 stats.jevCalls++;
                 supported = check.supportedProbability;
+                trace("answer_check", { from: "fast_mode", pass, supported });
             } catch {
                 // Keep the answer if the check itself fails.
             }
@@ -387,13 +433,17 @@ Rules:
 - Call observe() before using refs, and again after actions that change the page.
 - ${UNTRUSTED_CONTENT_RULE}
 - Only take irreversible actions (buy, pay, send, delete, publish...) when the task clearly asks for them; the user is asked to confirm each one.
-- Answer from what the page shows. Be concise and specific; include names, prices and links when relevant.`,
+- ${CREDENTIALS_RULE} If the browser already filled them in, you may click the sign-in button; the user is asked to confirm.
+- Answer from what the page shows. Be concise and specific; include names, prices and links when relevant.
+- Work fast. If a few searches or places turn up nothing, stop and say so rather than trying every variation.
+- If you can't fully answer, finish with what you found, what you couldn't find, and where you looked.`,
     });
 
-    let lastPage: PageModel = parsePage(await browser.snapshot());
+    let lastPage: PageModel = parsePage(await browser.snapshot(), PLANNER_TEXT_CHARS);
     let response = await chat.sendMessage(`${handoff ? `${handoff}\n\n` : ""}Current page:\n${plannerObservation(lastPage, browserGoal)}`);
     stats.llmCalls++;
     const maxSteps = options.maxPlannerSteps ?? 30;
+    let nudged = false;
 
     for (let turn = 0; turn < maxSteps; turn++) {
         await checkCancelled();
@@ -409,19 +459,25 @@ Rules:
                     return finish(String(args.result || response.text || "").trim(), "planner");
                 }
                 if (call.name === "observe") {
-                    lastPage = parsePage(await browser.snapshot());
+                    lastPage = parsePage(await browser.snapshot(), PLANNER_TEXT_CHARS);
                     result = { ok: true, page: plannerObservation(lastPage, browserGoal) };
                 } else if (call.name === "click") {
                     const ref = String(args.ref || "");
                     const element = lastPage.elements.find((candidate) => candidate.ref === ref);
-                    const risky = irreversibleAction(element ? { role: element.role, label: element.name } : { label: String(args.element || "") });
+                    const candidate = element ? { role: element.role, label: element.name } : { label: String(args.element || "") };
+                    const risky = irreversibleAction(candidate) || signInAction(lastPage, candidate);
                     // Declining throws and ends the task.
                     if (risky) await confirmOrCancel(risky, lastPage.url);
                     await browser.click(ref, String(args.element || ""));
                     result = { ok: true };
                 } else if (call.name === "type") {
-                    await browser.type(String(args.ref || ""), String(args.element || ""), String(args.text || ""), args.submit === true);
-                    result = { ok: true };
+                    const field = lastPage.elements.find((candidate) => candidate.ref === String(args.ref || ""));
+                    if (field && isSecretField(field)) {
+                        result = { ok: false, error: "WebPilot never types passwords, codes or payment details. Ask the user to fill this in themselves." };
+                    } else {
+                        await browser.type(String(args.ref || ""), String(args.element || ""), String(args.text || ""), args.submit === true);
+                        result = { ok: true };
+                    }
                 } else if (call.name === "navigate") {
                     await browser.navigate(String(args.url || ""));
                     result = { ok: true, ...(await browser.pageInfo()) };
@@ -442,10 +498,23 @@ Rules:
                 stats.steps++;
                 emit({ type: "step", source: "llm", action: call.name, detail: String(args.element || args.url || args.text || ""), url: lastPage.url });
             }
+            trace("planner_tool", { name: call.name, args, ok: result.ok, error: result.error });
             outputs.push({ functionResponse: { name: call.name, response: result } });
+        }
+        if (!nudged && Date.now() - started > PLANNER_WRAP_UP_MS && outputs.length) {
+            nudged = true;
+            const last = outputs[outputs.length - 1].functionResponse;
+            last.response = { ...last.response, note: "This has taken over a minute. Unless the answer is one step away, call finish now with what you found and what you could not find." };
         }
         response = await chat.sendMessage(outputs);
         stats.llmCalls++;
     }
-    return finish("I ran out of steps before finishing this task.", "planner");
+
+    // Out of steps: still give the user what was learned.
+    await checkCancelled();
+    const wrapUp = await chat.sendMessage("You are out of steps. Do not call any more tools except finish. Give the user the final answer now: what you found, what you could not find, and where you looked.");
+    stats.llmCalls++;
+    const finishCall = wrapUp.functionCalls.find((call) => call.name === "finish");
+    const summary = String((finishCall?.args as Record<string, unknown> | undefined)?.result || wrapUp.text || "").trim();
+    return finish(summary || "I couldn't finish this task in the steps I had.", "planner");
 }

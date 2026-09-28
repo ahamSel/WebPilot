@@ -9,6 +9,20 @@ export interface LogStep {
     atMs: number;
 }
 
+/** One entry of a turn's technical trace, kept locally for troubleshooting; never shown in the chat. */
+export interface TraceEntry {
+    atMs: number;
+    kind: string;
+    data?: Record<string, unknown>;
+}
+
+/** What the user thought of an answer. */
+export interface TurnFeedback {
+    rating?: "up" | "down";
+    note?: string;
+    at: number;
+}
+
 export interface Turn {
     id: string;
     user: string;
@@ -24,6 +38,9 @@ export interface Turn {
     stats?: { jevCalls: number; llmCalls: number };
     /** Hidden browser state for follow-ups; never shown in the chat. */
     memory?: TaskMemory;
+    /** Saved with the conversation, not sent to panels. */
+    trace?: TraceEntry[];
+    feedback?: TurnFeedback;
 }
 
 /** A saved conversation, stored locally in chrome.storage.local. */
@@ -66,7 +83,9 @@ export type PanelMessage =
     | { type: "history" }
     | { type: "open"; conversationId: string }
     | { type: "delete"; conversationId: string }
-    | { type: "clear-history" };
+    | { type: "clear-history" }
+    /** Feedback on an answer (the latest one when no turnId); notes add up. */
+    | { type: "feedback"; turnId?: string; rating?: "up" | "down"; note?: string };
 
 export type EngineMessage =
     | { type: "state"; state: SessionState }

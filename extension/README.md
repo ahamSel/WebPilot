@@ -21,6 +21,7 @@ Then open `chrome://extensions`, turn on **Developer mode**, click **Load unpack
 - It's a conversation: follow-ups like "what about the second one?" or "open it" continue from the previous answers. Each turn also keeps hidden notes (pages visited, where it ended, what it clicked) so later messages can pick up from there, even after the tab has moved on.
 - **History** (clock icon) lists past conversations. Opening one continues it in the current tab; WebPilot doesn't restore the old pages but knows what it did and navigates back if needed. **+** starts a new conversation.
 - Enter sends, Shift+Enter adds a line, Esc stops a running task.
+- Rate any answer with 👍/👎 and add a note, or type `/feedback <what was off>` to attach a note to the last answer. Notes are saved locally with that run's trace (below), so problems can be looked into later.
 
 ## First run
 
@@ -31,12 +32,15 @@ Fast mode (Jev) is on by default.
 ## How it works
 
 - WebPilot controls the tab you ask it to through `chrome.debugger` (the Chrome DevTools Protocol), attaching only when a task needs the page. Chrome shows a "WebPilot started debugging this browser" bar while a task runs; it goes away when the task ends, and clicking **Cancel** on it stops the task.
+- Chrome refuses the debugger on pages that contain another extension's frame, which password managers (LastPass, 1Password...) and tools like Grammarly add to many pages, including Gmail, and detaches it when such a frame appears mid-task. It also can't attach while another tool is debugging the tab. On those pages WebPilot switches to page scripts (`src/dom-browser.ts`, `src/page-scripts.ts`): it reads the visible page into the same snapshot format and acts with DOM events. The flight log notes the switch; each navigation tries the debugger again.
 - Pages are read from Chrome's accessibility tree and acted on with real mouse and keyboard events, so sites treat them like your own input.
 - The same core runs in the desktop app and the extension: `lib/core/run-task.ts` (the task flow), `lib/cdp/` (the CDP driver and accessibility-tree snapshot), `lib/jev/` (fast mode), `lib/safety.ts` and `lib/model-client.ts`.
 - The agent runs in the extension's background service worker (`src/engine.ts`), one session per tab; panels are views connected over a port. While a task runs, the worker keeps itself alive.
 - Requests about the open page that reading alone can answer ("summarize this", "what does this say about X") skip navigation and clicks and stream the answer straight from the page. Other requests that only find or read information use fast mode: Jev picks each click in ~0.3s and the model writes text and the answer. Requests that change something (buy, book, send, delete, submit) use the careful model planner.
 - Answers stream into the panel as they are written; Jev then checks them against the page, and an unsupported answer is redone (first by Jev looking closer, then by the model).
 - Before an irreversible click (buy, place order, checkout, send, delete, publish, unsubscribe...) the panel shows **"Hold on — this can't be undone"** with Allow and Cancel. Cancel ends the task there; say "go ahead" to continue.
+- WebPilot never types into password, one-time-code or card fields and never makes up usernames or other personal details. On a sign-in page your password manager has already filled in, clicking "Log in" asks first (**"Hold on — sign in?"**); otherwise it asks you to sign in yourself and then continue.
+- A follow-up like "no, it's on Gmail" or "try again" continues a request that didn't finish.
 
 ## Permissions
 
@@ -44,16 +48,16 @@ Fast mode (Jev) is on by default.
 |---|---|
 | `sidePanel` | The WebPilot panel |
 | `debugger` | Reading and controlling the tab you ask it to work in |
+| `scripting` + all sites | Page scripts, for pages where Chrome doesn't allow the debugger (see How it works) |
 | `tabs` | Knowing which tab is active and its title |
 | `storage` | Your settings, OpenRouter key and conversation history (stored locally) |
 | `identity` | "Connect OpenRouter" sign-in |
-| `https://openrouter.ai/*` | Model and Jev requests |
 
 Chrome does not allow extensions to control `chrome://` pages or the Chrome Web Store.
 
 ## Privacy
 
-Page text, element labels and URLs of the tab WebPilot works in are sent to OpenRouter to run the model, and in fast mode to TypeSafe (through OpenRouter) for Jev. Nothing is sent while no task is running. Settings and conversation history (at most the 100 most recent conversations) stay in the browser's local extension storage on this device; they are never synced or uploaded. History has Clear all.
+Page text, element labels and URLs of the tab WebPilot works in are sent to OpenRouter to run the model, and in fast mode to TypeSafe (through OpenRouter) for Jev. Nothing is sent while no task is running. Settings and conversation history (at most the 100 most recent conversations) stay in the browser's local extension storage on this device; they are never synced or uploaded. Each answer also keeps a short technical trace there (routing decisions, steps and timings, errors) and any feedback you left, for troubleshooting. History has Clear all, which removes these too.
 
 ## Testing
 
@@ -80,7 +84,13 @@ node scripts/build-extension.mjs --dev --out ~/WebPilot-extension   # load this 
 npx tsx scripts/extension-bridge.ts ping chrome                      # or edge, brave...
 npx tsx scripts/extension-bridge.ts reload edge                      # pick up a rebuild without clicking
 npx tsx scripts/extension-bridge.ts run chrome "summarize this page" --url https://example.com
+npx tsx scripts/extension-bridge.ts run edge "find X in my email" --then "no, it's on gmail"   # a conversation
+npx tsx scripts/extension-bridge.ts last edge [n]            # your most recent conversation (n-th most recent), with traces
+npx tsx scripts/extension-bridge.ts feedback edge            # answers you rated or commented on, with traces
+npx tsx scripts/extension-bridge.ts targets chrome https://mail.google.com   # what blocks the debugger on a page
 npm run bench:fast-mode -- --engine extension --browser chrome --suite realistic --modes fast
 ```
+
+The smoke test also loads a stand-in for a password manager (`scripts/fixtures/frame-injector`) that puts its frame into pages opened with `?pm=1`, so the page-script path is tested too.
 
 The extension polls `http://127.0.0.1:4466` and only accepts commands from a server that knows the random secret generated for that build (`extension/.dev-bridge-token`, gitignored). Release builds (`npm run extension:build`) compile the bridge out and drop its permissions (`alarms`, localhost).

@@ -72,6 +72,35 @@ export function irreversibleAction(candidate: ActionCandidate): string | null {
     return `${role || "control"} "${label.slice(0, 80)}"`;
 }
 
+/** Fields WebPilot never types into: passwords, one-time codes, payment and ID numbers. */
+const SECRET_FIELD = /\b(?:pass(?:word|code|wd|phrase)?|pin|one[- ]time|otp|2fa|two[- ]factor|verification code|security code|auth(?:entication)? code|cvv|cvc|csc|card number|credit card|debit card|expiry|expiration|iban|routing number|account number|sort code|ssn|social security)\b/i;
+
+/**
+ * True for a text field that holds a secret (by its label, or a masked value).
+ * The user fills these in themselves; the agent never types into them.
+ */
+export function isSecretField(field: { name: string; value?: string }): boolean {
+    return SECRET_FIELD.test(field.name) || /^[•●∙*]{3,}$/.test((field.value || "").trim());
+}
+
+const SIGN_IN_LABEL = /^(?:(?:sign|log)\s*(?:in|on)|login|continue|next|submit|verify)\b/i;
+
+/**
+ * Clicking "Log in" (or Next/Continue) on a page with a password field signs in
+ * with whatever is filled in, such as the browser's saved password: the user
+ * confirms it first. Returns a description for the confirmation, or null.
+ */
+export function signInAction(page: { elements: Array<{ kind: string; name: string; value?: string }> }, candidate: ActionCandidate): string | null {
+    const label = candidate.label.replace(/\s+/g, " ").trim().replace(/^["'\s]+|["'\s]+$/g, "");
+    if (!SIGN_IN_LABEL.test(label)) return null;
+    if (!page.elements.some((element) => element.kind === "type" && isSecretField(element))) return null;
+    return `${candidate.role || "button"} "${label.slice(0, 60)}" to sign in with the details filled in`;
+}
+
+/** For the model: credentials and sign-in pages. */
+export const CREDENTIALS_RULE =
+    "Never type passwords, one-time codes or payment details, and never make up usernames, emails or other personal details the task doesn't give. If a page asks the user to sign in and the fields are not already filled in, stop and ask the user to sign in in this tab, then ask again.";
+
 export function confirmationMessage(action: string, pageUrl: string): string {
     let host = "";
     try {
