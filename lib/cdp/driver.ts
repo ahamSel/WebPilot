@@ -22,6 +22,8 @@ export interface CdpTransport {
 const NAVIGATION_START_WINDOW_MS = 400;
 const LOAD_TIMEOUT_MS = 12_000;
 const SETTLE_MS = 250;
+/** How long past DOMContentLoaded to wait for the load event. */
+export const AFTER_DOM_READY_MS = 2500;
 /** How long a navigation request may take to start loading before it's treated as same-document. */
 const NAVIGATION_REQUEST_GRACE_MS = 1500;
 const NAVIGATE_RESPONSE_TIMEOUT_MS = 10_000;
@@ -128,10 +130,13 @@ export class CdpBrowser implements FastModeBrowser {
         await this.enable();
         let navigating = false;
         let loaded = false;
+        let domReadyAt = 0;
         const unsubscribe = this.transport.onEvent((method, params) => {
             const frame = (params.frame || {}) as { parentId?: string };
-            if (method === "Page.frameStartedLoading" || (method === "Page.frameNavigated" && !frame.parentId)) navigating = true;
-            if (method === "Page.loadEventFired" || method === "Page.frameStoppedLoading") loaded = true;
+            const main = params.frameId === undefined || params.frameId === this.mainFrameId;
+            if ((method === "Page.frameStartedLoading" && main) || (method === "Page.frameNavigated" && !frame.parentId)) navigating = true;
+            if (method === "Page.domContentEventFired") domReadyAt = Date.now();
+            if (method === "Page.loadEventFired" || (method === "Page.frameStoppedLoading" && main)) loaded = true;
             // The debugger was detached: nothing more will arrive.
             if (method === "Inspector.detached") navigating = loaded = true;
         });
@@ -140,8 +145,10 @@ export class CdpBrowser implements FastModeBrowser {
             const windowEnd = Date.now() + NAVIGATION_START_WINDOW_MS;
             while (!navigating && Date.now() < windowEnd) await sleep(50);
             if (navigating) {
+                // Heavy sites keep loading ads and trackers long after the page is
+                // usable: once its DOM is ready, give the full load only a little longer.
                 const deadline = Date.now() + LOAD_TIMEOUT_MS;
-                while (!loaded && Date.now() < deadline) await sleep(50);
+                while (!loaded && Date.now() < deadline && !(domReadyAt && Date.now() - domReadyAt > AFTER_DOM_READY_MS)) await sleep(50);
             }
             await sleep(SETTLE_MS);
         } finally {

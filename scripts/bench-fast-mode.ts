@@ -15,6 +15,10 @@
  *              checked against live data where possible, plus a local webmail
  *              and shop (scripts/fixtures/realistic-sites.mjs) that record every
  *              send/delete/order so risky actions fail the scenario
+ *   everyday   a spread of everyday asks on public sites (weather, driving
+ *              time, a trailer, a product price, news, docs, a recipe,
+ *              currency, GitHub, Stack Overflow, facts), checked against live
+ *              data where possible
  *
  * Engines:
  *   desktop    the desktop agent (lib/agent.ts over Playwright MCP)
@@ -42,7 +46,7 @@ import { startRealisticSites } from "./fixtures/realistic-sites.mjs";
 
 type Mode = "llm" | "fast";
 type Engine = "desktop" | "cdp" | "extension";
-type Suite = "core" | "realistic";
+type Suite = "core" | "realistic" | "everyday";
 
 interface FixtureSites {
     url: string;
@@ -123,6 +127,26 @@ async function cheapestPoetryBook(): Promise<{ title: string; price: number }> {
         .map((match) => ({ title: match[1].replace(/&#39;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, "\""), price: Number(match[2]) }));
     if (!books.length) throw new Error("Could not read the books.toscrape poetry page");
     return books.sort((left, right) => left.price - right.price)[0];
+}
+
+/** Numbers written in an answer: "84,123", "84.1k", "1.2 million", "$139.45". */
+function numbersIn(text: string): number[] {
+    return Array.from(text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(k\b|thousand|m\b|million)?/gi)).map((match) => {
+        const value = Number(match[1].replace(/,/g, ""));
+        const unit = (match[2] || "").toLowerCase();
+        return unit === "k" || unit === "thousand" ? value * 1_000 : unit === "m" || unit === "million" ? value * 1_000_000 : value;
+    }).filter(Number.isFinite);
+}
+
+/** Passes when the answer states a number within `tolerance` of the live value. */
+function expectNear(live: () => Promise<number>, tolerance: number, what: string) {
+    return async (outcome: RunOutcome) => {
+        const base = expectAll()(outcome);
+        if (base) return base;
+        const expected = await live();
+        const found = numbersIn(outcome.finalResult).some((value) => Math.abs(value - expected) <= expected * tolerance);
+        return found ? null : `answer has no ${what} near ${expected.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+    };
 }
 
 function noRiskyActions(outcome: RunOutcome): string | null {
@@ -227,6 +251,74 @@ const SCENARIOS: Scenario[] = [
         id: "books_two_parts", suite: "realistic",
         goal: "on books.toscrape.com, how much is 'A Light in the Attic', and how many books are in the poetry category?",
         check: expectAll(/51\.77/, /\b19\b/),
+    },
+
+    // everyday: a spread of common asks on public sites
+    {
+        id: "weather_tomorrow", suite: "everyday",
+        goal: "what's the weather going to be like tomorrow in st. john's newfoundland?",
+        check: expectAll(/-?\d+\s*°|\d+\s*degrees/i, /John/i),
+    },
+    {
+        id: "drive_time", suite: "everyday",
+        goal: "how long is the drive from toronto to montreal?",
+        check: expectAll(/\b[4-6](\.\d)?\s*(h\b|hrs?\b|hours?)/i),
+    },
+    {
+        id: "youtube_trailer", suite: "everyday",
+        goal: "find me the official trailer for dune part two on youtube",
+        check: expectAll(/youtube\.com\/watch\?v=|youtu\.be\//i, /dune/i),
+    },
+    {
+        id: "headphones_price", suite: "everyday",
+        goal: "how much are the sony wh-1000xm5 headphones at best buy canada?",
+        check: expectAll(/\$\s?\d{2,3}(\.\d{2})?/, /1000XM5|XM5/i),
+    },
+    {
+        id: "cbc_top_story", suite: "everyday",
+        goal: "what's the top story on cbc news right now?",
+        check: (outcome) => expectAll()(outcome)
+            ?? (outcome.finalResult.length < 60 || /\b(couldn't|could not|unable to|wasn't able)\b/i.test(outcome.finalResult) ? "no real headline in the answer" : null),
+    },
+    {
+        id: "mdn_fetch_post", suite: "everyday",
+        goal: "how do i send a POST request with fetch in javascript? check mdn",
+        check: expectAll(/method:\s*["'`]POST["'`]/i),
+    },
+    {
+        id: "banana_bread_oven", suite: "everyday",
+        goal: "find a simple banana bread recipe and tell me the oven temperature",
+        check: expectAll(/3[25]0\s*°?\s*F|1[6-8]\d\s*°?\s*C/i),
+    },
+    {
+        id: "usd_to_cad", suite: "everyday",
+        goal: "how much is 100 us dollars in canadian dollars right now?",
+        check: expectNear(async () => 100 * (await fetchJson<{ rates: { CAD: number } }>("https://open.er-api.com/v6/latest/USD")).rates.CAD, 0.03, "CAD amount"),
+    },
+    {
+        id: "github_stars", suite: "everyday",
+        goal: "how many stars does the microsoft/playwright repo have on github?",
+        check: expectNear(async () => (await fetchJson<{ stargazers_count: number }>("https://api.github.com/repos/microsoft/playwright")).stargazers_count, 0.03, "star count"),
+    },
+    {
+        id: "git_undo_commit", suite: "everyday",
+        goal: "how do I undo my last git commit but keep the changes? check stack overflow",
+        check: expectAll(/git reset --soft HEAD(~1?|\^)/i),
+    },
+    {
+        id: "everest_vs_k2", suite: "everyday",
+        goal: "which is taller, mount everest or k2, and by how much?",
+        check: expectAll(/everest/i, /2[2-4]\d(\.\d+)?\s*(m\b|meters|metres)|7[5-9]\d(\.\d+)?\s*(ft|feet)/i),
+    },
+    {
+        id: "cn_tower_height", suite: "everyday",
+        goal: "how tall is the cn tower?",
+        check: expectAll(/553/),
+    },
+    {
+        id: "museum_hours", suite: "everyday",
+        goal: "what are the opening hours of the rooms museum in st john's?",
+        check: expectAll(/\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)/i),
     },
 
     // realistic: private-data style tasks on local fixtures

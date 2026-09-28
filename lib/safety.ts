@@ -99,7 +99,15 @@ export function signInAction(page: { elements: Array<{ kind: string; name: strin
 
 /** For the model: credentials and sign-in pages. */
 export const CREDENTIALS_RULE =
-    "Never type passwords, one-time codes or payment details, and never make up usernames, emails or other personal details the task doesn't give. If a page asks the user to sign in and the fields are not already filled in, stop and ask the user to sign in in this tab, then ask again.";
+    "Never type passwords, one-time codes or payment details, and never make up usernames, emails or other personal details the task doesn't give.";
+
+/**
+ * For the model: anything only the user can clear (signing in, a CAPTCHA, a
+ * paywall, a verification code, payment details, a consent or permission
+ * prompt, or an action they declined), handled one way rather than case by case.
+ */
+export const OBSTACLE_RULE =
+    "When something only the user can do or approve stands in the way (signing in, a CAPTCHA or human check, a paywall or subscription, a verification code, payment details, a consent or permission prompt, or an action the user declined), never try to get past it, fake it or work around it (no caches, mirrors, retries or made-up details). First do everything else you can: the other parts of the task, and other reputable sources for the same information. Then answer with what you found and exactly what the user needs to do to finish the rest (for example: sign in to that site in this tab and ask again).";
 
 export function confirmationMessage(action: string, pageUrl: string): string {
     let host = "";

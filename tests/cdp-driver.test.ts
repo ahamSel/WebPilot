@@ -70,3 +70,18 @@ test("a navigation request that never loads a new document expires quickly", asy
     await assert.rejects(browser.click("b5"), /Take a new snapshot/);
     assert.ok(Date.now() - started < 1000);
 });
+
+test("a navigation proceeds soon after the page's DOM is ready, without waiting for a slow full load", async () => {
+    const { browser, emit } = fakeTab();
+    await browser.snapshot();
+    const started = Date.now();
+    const navigation = browser.navigate("https://shop.example/deals");
+    setTimeout(() => {
+        emit("Page.frameStartedLoading", { frameId: "main" });
+        emit("Page.domContentEventFired", {});
+        // No load event: ads and trackers keep the page "loading".
+    }, 50);
+    await navigation;
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 2500 && elapsed < 4500, `took ${elapsed}ms`);
+});

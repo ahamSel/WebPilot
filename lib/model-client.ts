@@ -114,7 +114,11 @@ export interface ModelClient {
     createToolChat(config: ToolChatOptions): ToolChat;
     generateText(options: GenerateTextOptions): Promise<string>;
     /** Like generateText, but reports text as it is generated. */
-    generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void): Promise<string>;
+    /**
+     * `onReset`, when given, lets a stream that fails partway be retried: the
+     * text already reported is withdrawn first.
+     */
+    generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void, onReset?: () => void): Promise<string>;
 }
 
 interface ChatMessage {
@@ -356,7 +360,8 @@ async function* streamDeltas(config: RuntimeModelConfig, body: Record<string, un
 async function streamChatCompletion(
     config: RuntimeModelConfig,
     body: Record<string, unknown>,
-    onDelta: (text: string) => void
+    onDelta: (text: string) => void,
+    onReset?: () => void
 ): Promise<string> {
     let full = "";
     const attempt = async () => {
@@ -371,8 +376,10 @@ async function streamChatCompletion(
     try {
         return await attempt();
     } catch (error) {
-        // Retry only if nothing reached the reader yet: shown text can't be taken back here.
-        if (full || !worthRetrying(config, error)) throw error;
+        // Text already shown can only be retried if the caller can take it back.
+        if ((full && !onReset) || !worthRetrying(config, error)) throw error;
+        if (full) onReset!();
+        full = "";
         return await attempt();
     }
 }
@@ -583,8 +590,8 @@ class ChatCompletionsModelClient implements ModelClient {
         return normalizeContent(firstChoiceMessage(response).content);
     }
 
-    async generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void): Promise<string> {
-        return (await streamChatCompletion(this.config, this.textBody(options), onDelta)).trim();
+    async generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void, onReset?: () => void): Promise<string> {
+        return (await streamChatCompletion(this.config, this.textBody(options), onDelta, onReset)).trim();
     }
 
     private textBody(options: GenerateTextOptions): Record<string, unknown> {

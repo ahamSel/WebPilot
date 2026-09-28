@@ -251,6 +251,23 @@ test("a tool turn that fails mid-stream is withdrawn and retried once", async ()
     assert.deepEqual(shown, ["Here are three", "<reset>", "Here are three rentals."]);
 });
 
+test("an answer stream that fails partway is withdrawn and retried once", async () => {
+    const sse = (events: Array<Record<string, unknown>>) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
+    const replies = [
+        sse([{ choices: [{ delta: { content: "The cheapest is" } }] }, { error: { message: "JSON error injected into SSE stream" } }]),
+        sse([{ choices: [{ delta: { content: "The cheapest is the Trailhead 2P at $89.99." } }] }]),
+    ];
+    globalThis.fetch = (async () => new Response(replies.shift(), { status: 200, headers: { "Content-Type": "text/event-stream" } })) as typeof fetch;
+    const shown: string[] = [];
+    const answer = await createModelClient(openRouterConfig()).generateTextStream(
+        { model: "google/gemini-3.8-flash", prompt: "cheapest tent?" },
+        (text) => shown.push(text),
+        () => shown.push("<reset>")
+    );
+    assert.equal(answer, "The cheapest is the Trailhead 2P at $89.99.");
+    assert.deepEqual(shown, ["The cheapest is", "<reset>", "The cheapest is the Trailhead 2P at $89.99."]);
+});
+
 test("Ollama requests omit OpenRouter-only fields", async () => {
     const requests = mockFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
     const client = createModelClient(resolveRuntimeModelConfig({ provider: "ollama", navModel: "qwen3:8b" }));
