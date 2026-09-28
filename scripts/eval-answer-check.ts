@@ -56,6 +56,13 @@ const CASES: Case[] = [
         paths: ["/shop", "/shop/p/trailhead-2p"],
     },
     {
+        id: "G5 main answer with a minor caveat",
+        good: true,
+        task: "what's the cheapest 2-person tent and when was it listed?",
+        answer: "The **Trailhead 2P Backpacking Tent** at **$89.99**, listed 3 days ago. (The page only says \"3 days ago\", not an exact date.)",
+        paths: ["/shop"],
+    },
+    {
         id: "B1 wrong fact",
         good: false,
         task: "what's the cheapest 2-person tent on this site and how much is it?",
@@ -68,6 +75,14 @@ const CASES: Case[] = [
         task: "find that email where i was asked about relocation. who sent it and what did they want to know?",
         answer: "Priya Nair asked about your salary expectations and whether you could start on October 1.",
         paths: ["/mail", "/mail/message/16"],
+    },
+    {
+        // A real miss: Jev opened a look-alike newsletter and stopped there.
+        id: "B5 look-alike item, admits it's not the one",
+        good: false,
+        task: "can you find that email where i was asked about relocation? who sent it and what did they want to know?",
+        answer: "The only email found matching \"relocation\" on the first page of your inbox is:\n\n* **Subject:** Relocation packages: 5 tips for a smooth move\n* **Sender:** Globe Weekly\n* It is a newsletter rather than someone asking you a personal question.\n\nIf you were expecting a specific person asking about your relocation plans, that email does not appear on the first page of your inbox and would require checking the older pages or using search.",
+        paths: ["/mail", "/mail/message/4"],
     },
     {
         id: "B3 only one of two parts",

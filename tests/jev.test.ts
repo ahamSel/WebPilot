@@ -359,6 +359,28 @@ test("turning down a sign-in stops fast mode at once, like any other decline", a
     assert.deepEqual(calls, [], "nothing was clicked, and no wandering around the sign-in page");
 });
 
+test("choosing done while unsure gets the LLM's second look before finishing", async () => {
+    mockJev([
+        // On the wrong page, Jev wants to stop but isn't sure it answers the task.
+        () => ({ action: choice("done", { done: 0.65, back: 0.2 }), goal_done: noul(0.45), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.02) }),
+    ]);
+    const prompts: string[] = [];
+    const writer = {
+        generateText: async (request: { prompt: string }) => {
+            prompts.push(request.prompt);
+            return "{\"action\": \"click\", \"ref\": \"e7\", \"reason\": \"prices are on the pricing page\"}";
+        },
+        createToolChat: () => { throw new Error("unused"); },
+    } as unknown as ModelClient;
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const result = await runFastMode(fastModeOptions(browser, writer));
+
+    assert.equal(result.outcome, "done");
+    assert.deepEqual(calls, ["click e7"], "it looked further instead of stopping on the wrong page");
+    assert.match(prompts[0], /isn't sure this page answers the task/);
+});
+
 test("fast mode hands irreversible clicks to the planner", async () => {
     mockJev([() => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) })]);
     const { browser, calls } = fakeBrowser({ home: HOME }, "home");
@@ -387,8 +409,8 @@ test("Jev gates only shortcut the LLM when confident", async () => {
     mockJev([
         () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05), changes_something: noul(0.9), multiple_parts: noul(0.8) }),
         () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6), changes_something: noul(0.1), multiple_parts: noul(0.1) }),
-        () => ({ claims_supported: noul(0.95), answers_task: noul(0.9) }),
-        () => ({ claims_supported: noul(0.95), answers_task: noul(0.05) }),
+        () => ({ claims_supported: noul(0.95), answers_task: noul(0.9), admits_missing: noul(0.03) }),
+        () => ({ claims_supported: noul(0.95), answers_task: noul(0.9), admits_missing: noul(0.9) }),
     ]);
     const confident = await jevPreflight(JEV, "Go to example.com", "");
     assert.equal(confident.browse, true);

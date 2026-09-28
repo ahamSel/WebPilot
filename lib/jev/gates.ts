@@ -124,7 +124,11 @@ export interface AnswerCheck {
     accept?: true;
     /** The lower of the two scores below; the task runner redoes answers under 0.3. */
     supportedProbability: number;
-    /** claims_supported: facts are on the pages seen. answers_task: every part of the task is answered. */
+    /**
+     * claims_supported: facts are on the pages seen. answers_task: every part of
+     * the task is answered. admits_missing: the answer itself says the main thing
+     * wasn't found (e.g. "that email doesn't appear on this page"); it counts as 1 minus.
+     */
     scores: Record<string, number>;
     latencyMs: number;
 }
@@ -175,15 +179,20 @@ export async function jevCheckAnswer(
                 type: "noul",
                 instructions: "Does the proposed answer give what the task asks for, covering every part of it? Answer false if it only says the information could not be found, or leaves part of the task unanswered.",
             },
+            admits_missing: {
+                type: "noul",
+                instructions: "Does the proposed answer itself say that the main thing the task asked for was not found, is probably somewhere else, or needs more looking (for example 'the email you mean doesn't appear on this page')? Answer false when it gives the main answer and only notes a small missing detail.",
+            },
         }
     );
     const claims = noulAnswer(decision, "claims_supported");
     const answers = noulAnswer(decision, "answers_task");
-    const supported = Math.min(claims, answers);
+    const missing = noulAnswer(decision, "admits_missing");
+    const supported = Math.min(claims, answers, 1 - missing);
     return {
         accept: supported >= ACCEPT_THRESHOLD ? true : undefined,
         supportedProbability: supported,
-        scores: { claims_supported: claims, answers_task: answers },
+        scores: { claims_supported: claims, answers_task: answers, admits_missing: missing },
         latencyMs: decision.latencyMs,
     };
 }

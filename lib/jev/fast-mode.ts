@@ -124,6 +124,8 @@ type Operation = "click" | "type" | "scroll_down" | "scroll_up" | "back" | "navi
 /** Jev choices allow 255 options; element actions plus page actions share them. */
 const MAX_ACTION_OPTIONS = 250;
 const DONE_THRESHOLD = 0.85;
+/** Below this, Jev choosing "done" gets a second opinion from the LLM. */
+const CONFIDENT_DONE = 0.6;
 /**
  * Open-ended tasks ("find some tents on kijiji") are often complete on a results
  * page, where Jev says "probably done" but has no confident next action. Without
@@ -491,10 +493,13 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
             alternatives: alternativesOf(decision, questions),
         });
 
-        if (mayFinish && (operation === "done" || goalDone >= DONE_THRESHOLD)) {
+        // Picking "done" while unsure the page answers the task (a similar-looking
+        // item, a partial result) goes to the LLM for a second look below.
+        const unsureDone = operation === "done" && goalDone < CONFIDENT_DONE;
+        if (mayFinish && ((operation === "done" && !unsureDone) || goalDone >= DONE_THRESHOLD)) {
             return finish("done", `Jev judged the task complete (goal_done=${goalDone.toFixed(2)}).`, page, step - 1);
         }
-        if (mayFinish && goalDone >= LIKELY_DONE_THRESHOLD && chosen.probability < UNSURE_ACTION_PROBABILITY) {
+        if (mayFinish && !unsureDone && goalDone >= LIKELY_DONE_THRESHOLD && chosen.probability < UNSURE_ACTION_PROBABILITY) {
             return finish(
                 "done",
                 `Jev judged the task likely complete (goal_done=${goalDone.toFixed(2)}) with no confident next action (p=${chosen.probability.toFixed(2)}).`,
@@ -508,6 +513,7 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
             ? jevFailure
             : operation === "blocked" ? "Jev reported the task is blocked on this page."
             : stuck >= STUCK_THRESHOLD && step > 2 ? `Jev reported being stuck (stuck=${stuck.toFixed(2)}).`
+            : unsureDone && mayFinish ? `Jev would finish here but isn't sure this page answers the task (goal_done=${goalDone.toFixed(2)}).`
             : pendingTrouble
             || (chosen.probability < GUESSING_PROBABILITY && goalDone < LIKELY_DONE_THRESHOLD ? `Jev is unsure of the next step (p=${chosen.probability.toFixed(2)}).` : null);
         pendingTrouble = null;
@@ -517,7 +523,11 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
         let submit: boolean | undefined;
         let url: string | undefined;
         if (trouble) {
-            if (consultsLeft <= 0) return finish("handoff", trouble, page, step - 1);
+            if (consultsLeft <= 0) {
+                // Out of second opinions: finish as Jev chose; the answer check still judges it.
+                if (unsureDone && mayFinish) return finish("done", `Jev judged the task complete (goal_done=${goalDone.toFixed(2)}).`, page, step - 1);
+                return finish("handoff", trouble, page, step - 1);
+            }
             consultsLeft--;
             const advice = await consultAdvisor(options, page, [...clickPool.selected, ...typePool.selected], history, trouble, mayFinish);
             if (advice.operation === "done") return finish("done", `The LLM judged the task complete: ${advice.reason}`, page, step - 1);
