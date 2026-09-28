@@ -1,6 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { decide, rankedChoices, validateQuestions, type JevClientConfig } from "../lib/jev/client";
+import { JEV_TOKEN_BUDGET, decide, estimateJevTokens, rankedChoices, validateQuestions, type JevClientConfig } from "../lib/jev/client";
 import { describeElement, parsePage, selectCandidates, type PageElement } from "../lib/jev/page";
 import { runFastMode, type FastModeBrowser } from "../lib/jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../lib/jev/gates";
@@ -213,12 +213,83 @@ test("fast mode skips actions that did nothing and hands off after repeated no-p
         submit_after_typing: noul(0.5),
     })));
     const { browser, calls } = fakeBrowser({ home: HOME }, "home");
-    const result = await runFastMode(fastModeOptions(browser));
+    const result = await runFastMode({ ...fastModeOptions(browser), maxConsults: 0 });
 
     assert.equal(result.outcome, "handoff");
     assert.match(result.reason, /no visible progress/);
     assert.deepEqual(calls, ["click e3", "click e9", "key PageDown"], "each failed action is removed before re-deciding");
     assert.ok(!("click_e3" in (requests[1].body.questions.action.criteria || {})));
+});
+
+test("a blocked Jev asks the LLM for one step, then keeps driving", async () => {
+    mockJev([
+        () => ({ action: choice("blocked"), goal_done: noul(0.05), stuck: noul(0.3), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.96), stuck: noul(0.02) }),
+    ]);
+    const prompts: string[] = [];
+    const writer = {
+        generateText: async (request: { prompt: string }) => {
+            prompts.push(request.prompt);
+            return "{\"action\": \"click\", \"ref\": \"e7\", \"reason\": \"the pricing page lists plans\"}";
+        },
+        createToolChat: () => { throw new Error("unused"); },
+    } as unknown as ModelClient;
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const sources: string[] = [];
+    const result = await runFastMode({ ...fastModeOptions(browser, writer), onStep: async (step) => { sources.push(step.source); } });
+
+    assert.equal(result.outcome, "done");
+    assert.deepEqual(calls, ["click e7"]);
+    assert.deepEqual(sources, ["llm"], "the consulted step is credited to the LLM");
+    assert.match(prompts[0], /blocked/);
+    assert.match(prompts[0], /\[e7\] link "Pricing plans"/);
+});
+
+test("the LLM advisor can send Jev's task to the planner", async () => {
+    mockJev([() => ({ action: choice("blocked"), goal_done: noul(0.05), stuck: noul(0.3), submit_after_typing: noul(0.5) })]);
+    const writer = { generateText: async () => "{\"action\": \"handoff\", \"reason\": \"needs a form\"}", createToolChat: () => { throw new Error("unused"); } } as unknown as ModelClient;
+    const { browser, calls } = fakeBrowser({ home: HOME }, "home");
+    const result = await runFastMode(fastModeOptions(browser, writer));
+
+    assert.equal(result.outcome, "handoff");
+    assert.match(result.reason, /needs a form/);
+    assert.deepEqual(calls, []);
+});
+
+test("Jev requests stay within its context budget on crowded pages", async () => {
+    const links = Array.from({ length: 400 }, (_, index) => `  - link "Listing ${index}: ${"spacious family camping tent with vestibule and rainfly ".repeat(3)}" [ref=e${100 + index}]:\n    - /url: /item/${index}`);
+    const crowded = snapshot("https://example.org/list", "Listings", `- main [ref=e1]:\n${links.join("\n")}\n  - paragraph [ref=e2]: ${"Lots of listing text. ".repeat(600)}`);
+    const requests = mockJev([() => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.02) })]);
+    const logged: string[] = [];
+    const browser: FastModeBrowser = { snapshot: async () => crowded, click: async () => "", type: async () => "", pressKey: async () => "", back: async () => "" };
+    // A small budget stands in for a page too big for Jev's 32k context.
+    const budget = 6000;
+    assert.ok(JEV_TOKEN_BUDGET > budget);
+    const result = await runFastMode({ ...fastModeOptions(browser), task: "find a family tent", jevTokenBudget: budget, log: (_level, action) => { logged.push(action); } });
+
+    assert.equal(result.outcome, "done");
+    const body = requests[0].body;
+    assert.ok(estimateJevTokens(body.state, body.questions as never) <= budget, "the request fits the budget");
+    assert.ok(Object.keys(body.questions.action.criteria || {}).length < 250, "fewer options were offered");
+    assert.ok(logged.includes("jev_request_trimmed"));
+});
+
+test("when a Jev call fails, the LLM picks that step", async () => {
+    let jevCalls = 0;
+    globalThis.fetch = (async () => {
+        jevCalls++;
+        if (jevCalls === 1) return new Response(JSON.stringify({ error: { message: "context length exceeded" } }), { status: 400, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ model: "jev", answers: { action: choice("done"), goal_done: noul(0.97), stuck: noul(0.02) }, usage: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const writer = {
+        generateText: async () => "{\"action\": \"click\", \"ref\": \"e7\", \"reason\": \"pricing\"}",
+        createToolChat: () => { throw new Error("unused"); },
+    } as unknown as ModelClient;
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const result = await runFastMode(fastModeOptions(browser, writer));
+
+    assert.equal(result.outcome, "done");
+    assert.deepEqual(calls, ["click e7"]);
 });
 
 test("fast mode hands irreversible clicks to the planner", async () => {
@@ -247,8 +318,8 @@ test("fast mode asks the LLM for typed text and Jev for submit", async () => {
 
 test("Jev gates only shortcut the LLM when confident", async () => {
     mockJev([
-        () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05), changes_something: noul(0.9) }),
-        () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6), changes_something: noul(0.1) }),
+        () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05), changes_something: noul(0.9), multiple_parts: noul(0.8) }),
+        () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6), changes_something: noul(0.1), multiple_parts: noul(0.1) }),
         () => ({ answer_supported: noul(0.9) }),
         () => ({ answer_supported: noul(0.05) }),
     ]);
@@ -256,6 +327,7 @@ test("Jev gates only shortcut the LLM when confident", async () => {
     assert.equal(confident.browse, true);
     assert.equal(confident.parallel, false);
     assert.equal(confident.changesSomething, true);
+    assert.equal(confident.multiPart, true);
 
     const unsure = await jevPreflight(JEV, "hmm", "");
     assert.equal(unsure.browse, undefined);

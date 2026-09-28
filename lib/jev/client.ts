@@ -60,6 +60,18 @@ export interface JevClientConfig {
 
 export const JEV_MAX_CHOICE_OPTIONS = 255;
 
+/**
+ * Jev's context through OpenRouter is 32k tokens for the state plus all
+ * questions (64k on TypeSafe's own API). Requests are kept under this, with
+ * headroom for tokenizer differences; smaller requests are also faster.
+ */
+export const JEV_TOKEN_BUDGET = 24_000;
+
+/** Rough token count of a Jev request: JSON averages ~3.2 characters per token (erring high). */
+export function estimateJevTokens(state: unknown, questions: Record<string, JevQuestion>): number {
+    return Math.ceil(JSON.stringify({ state, questions }).length / 3.2);
+}
+
 const RETRYABLE_STATUSES = new Set([429, 502, 503, 529]);
 const MAX_RETRIES = 2;
 

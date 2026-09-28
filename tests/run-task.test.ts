@@ -1,6 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { TaskFailedError, runTask, type TaskBrowser } from "../lib/core/run-task";
+import { TaskFailedError, compactPlannerResult, runTask, type TaskBrowser } from "../lib/core/run-task";
 import { resolveRuntimeModelConfig } from "../lib/model-client";
 
 const realFetch = globalThis.fetch;
@@ -37,7 +37,7 @@ function mockServices(chatReplies: Array<Record<string, unknown>>) {
     globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
         const body = url.endsWith("/systemone")
-            ? { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 } }, usage: {} }
+            ? { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } }, usage: {} }
             : { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
@@ -114,4 +114,52 @@ test("a failed task reports how far it got", async () => {
             return true;
         }
     );
+});
+
+test("the planner splits a multi-part request and delegates each part to Jev", async () => {
+    const chatReplies: Array<Record<string, unknown>> = [
+        { content: null, tool_calls: [{ id: "d1", type: "function", function: { name: "delegate", arguments: JSON.stringify({ goal: "find the tent's price" }) } }] },
+        { content: null, tool_calls: [{ id: "d2", type: "function", function: { name: "delegate", arguments: JSON.stringify({ goal: "find the tent's weight" }) } }] },
+        { content: "Trailhead 2P costs $89.99 and weighs 2.1 kg." },
+    ];
+    const fastModeTasks: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        let body: Record<string, unknown>;
+        if (url.endsWith("/systemone")) {
+            const request = JSON.parse(String(init?.body || "{}")) as { state: { task?: string }; questions: Record<string, unknown> };
+            if ("action" in request.questions) {
+                fastModeTasks.push(String(request.state.task));
+                body = { model: "jev", answers: { action: { type: "choice", choice: "done", confidence: 0.9, probabilities: { done: 0.9 } }, goal_done: { type: "noul", noul: 0.95 }, stuck: { type: "noul", noul: 0.01 } }, usage: {} };
+            } else {
+                body = { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.02 }, multiple_parts: { type: "noul", noul: 0.9 } }, usage: {} };
+            }
+        } else {
+            body = { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
+        }
+        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+
+    const events: string[] = [];
+    const result = await runTask({
+        goal: "what does the tent at https://shop.example/p/tent cost, and how much does it weigh?",
+        config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
+        browser: fakeBrowser([]),
+        confirm: async () => false,
+        onEvent: (event) => {
+            if (event.type === "step") events.push(`${event.source} ${event.action} ${event.detail || ""}`.trim());
+        },
+    });
+
+    assert.equal(result.mode, "planner");
+    assert.match(result.answer, /89\.99.*2\.1 kg/);
+    assert.deepEqual(fastModeTasks, ["find the tent's price", "find the tent's weight"], "each part went to Jev as its own sub-goal");
+    assert.deepEqual(events.filter((event) => event.includes("delegate")), ["llm delegate find the tent's price", "llm delegate find the tent's weight"]);
+});
+
+test("earlier page views in the planner's history keep their text but drop their elements", () => {
+    const page = "Page: Inbox (https://mail.example/)\nElements:\n[b1] link \"Inbox\"\n[b2] button \"Compose\"\n\nText:\nDental cleaning on October 3 at 10:30 AM.";
+    const compacted = compactPlannerResult({ ok: true, page });
+    assert.equal(compacted.page, "Page: Inbox (https://mail.example/)\n(Earlier page: elements omitted.)\nText:\nDental cleaning on October 3 at 10:30 AM.");
+    assert.deepEqual(compactPlannerResult({ ok: true }), { ok: true });
 });

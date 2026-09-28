@@ -239,7 +239,10 @@ export class ExtensionBridge {
             client.waiting?.writeHead(204);
             client.waiting?.end();
         }
-        await new Promise((resolve) => this.server.close(resolve));
+        // The browsers poll over keep-alive connections, which would hold close() open.
+        const closed = new Promise((resolve) => this.server.close(resolve));
+        this.server.closeAllConnections();
+        await closed;
     }
 }
 
@@ -253,17 +256,19 @@ async function main() {
             console.log(result);
             checkBuild(browser, result);
         } else if (command === "reload") {
-            console.log(await bridge.reload(browser));
-            // Wait for the reloaded extension to reconnect with the new build.
+            // Chrome sometimes ignores an extension reloading itself; ask again until
+            // the browser reports the build on disk.
             let result: BridgeResult = {};
-            for (let attempt = 0; attempt < 6; attempt++) {
-                await new Promise((resolve) => setTimeout(resolve, 1500));
-                await bridge.waitForClient(browser);
-                result = await bridge.ping(browser);
-                if (result.build === latestBuildId()) break;
+            for (let reloads = 0; reloads < 3 && result.build !== latestBuildId(); reloads++) {
+                console.log(await bridge.reload(browser));
+                for (let check = 0; check < 4; check++) {
+                    await new Promise((resolve) => setTimeout(resolve, 1500));
+                    await bridge.waitForClient(browser);
+                    result = await bridge.ping(browser);
+                    if (result.build === latestBuildId()) break;
+                }
             }
             console.log(result);
-            // Chrome sometimes ignores an extension reloading itself.
             if (!checkBuild(browser, result)) process.exitCode = 2;
         } else if (command === "feedback") {
             console.log(JSON.stringify(await bridge.feedback(browser, Number(rest[0]) || 20), null, 2));

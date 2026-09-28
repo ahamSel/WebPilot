@@ -19,6 +19,13 @@ export interface PreflightResult {
      * add to cart -> checkout, so these skip fast mode and go to the LLM planner.
      */
     changesSomething: boolean;
+    /**
+     * true: the request asks for several separate things likely found in different
+     * places ("when is X, and also when is Y"). The planner splits it and delegates
+     * each part to fast mode; fast mode alone stops after the first.
+     */
+    multiPart: boolean;
+    multiPartProbability: number;
     needsBrowserProbability: number;
     parallelProbability: number;
     changesSomethingProbability: number;
@@ -34,6 +41,7 @@ const PARALLEL_SKIP_BELOW = 0.35;
 const CHANGES_SOMETHING_THRESHOLD = 0.5;
 const ACCEPT_THRESHOLD = 0.8;
 const CURRENT_PAGE_THRESHOLD = 0.8;
+const MULTI_PART_THRESHOLD = 0.6;
 
 /**
  * One Jev call before any LLM call. With `currentPage` (the web page the user
@@ -76,6 +84,10 @@ export async function jevPreflight(
                 type: "noul",
                 instructions: "Does the message ask for two or more independent sub-tasks on different websites that could run at the same time without needing each other's results (for example, compare prices on two different stores)? Answer false for single-site tasks and for steps that depend on each other.",
             },
+            multiple_parts: {
+                type: "noul",
+                instructions: "Does the message ask for two or more separate pieces of information or results that would be found in different places, such as different emails, pages or searches (for example 'find when my appointment with X is and also when the Y ceremony is')? Answer false for a single question, even a detailed one, and for comparisons of items on one list.",
+            },
             changes_something: {
                 type: "noul",
                 instructions: "Does the message ask the assistant to carry out an action that changes something for the user, such as buying, ordering, adding to a cart, booking, paying, sending or replying to a message, posting, deleting, subscribing, or submitting a form? Answer false when the user only wants to find, compare, read, check or summarize information.",
@@ -85,6 +97,7 @@ export async function jevPreflight(
     const needsBrowser = noulAnswer(decision, "needs_browser");
     const parallel = noulAnswer(decision, "parallel_sites");
     const changesSomething = noulAnswer(decision, "changes_something");
+    const multiPart = noulAnswer(decision, "multiple_parts");
     return {
         browse: needsBrowser >= BROWSE_THRESHOLD ? true : undefined,
         parallel: parallel < PARALLEL_SKIP_BELOW ? false : undefined,
@@ -92,6 +105,8 @@ export async function jevPreflight(
         parallelProbability: parallel,
         changesSomething: changesSomething >= CHANGES_SOMETHING_THRESHOLD,
         changesSomethingProbability: changesSomething,
+        multiPart: multiPart >= MULTI_PART_THRESHOLD,
+        multiPartProbability: multiPart,
         startsOnCurrentPage: !!currentPage && noulAnswer(decision, "about_current_page") >= CURRENT_PAGE_THRESHOLD,
         answerFromCurrentPage: !!currentPage
             && noulAnswer(decision, "about_current_page") >= CURRENT_PAGE_THRESHOLD

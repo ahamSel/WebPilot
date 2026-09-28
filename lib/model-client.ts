@@ -89,12 +89,22 @@ export interface GenerateTextOptions {
     thinkingBudget?: number;
 }
 
+export interface ToolChatOptions {
+    model: string;
+    systemInstruction: string;
+    tools: ToolDeclaration[];
+    /**
+     * Shrinks an older tool result once newer ones exist (the last
+     * `keepFullToolResults`, default 2, stay whole). The whole conversation is
+     * re-sent every turn, so long page views from earlier steps would otherwise
+     * slow down every later step.
+     */
+    compactToolResponse?: (response: Record<string, unknown>) => Record<string, unknown>;
+    keepFullToolResults?: number;
+}
+
 export interface ModelClient {
-    createToolChat(config: {
-        model: string;
-        systemInstruction: string;
-        tools: ToolDeclaration[];
-    }): ToolChat;
+    createToolChat(config: ToolChatOptions): ToolChat;
     generateText(options: GenerateTextOptions): Promise<string>;
     /** Like generateText, but reports text as it is generated. */
     generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void): Promise<string>;
@@ -335,8 +345,9 @@ class ChatCompletionsToolChat implements ToolChat {
     private messages: ChatMessage[];
     private tools: Array<{ type: "function"; function: Record<string, unknown> }>;
     private pendingToolCalls: Array<{ id: string; name: string }> = [];
+    private toolResults: Array<{ messageIndex: number; response: Record<string, unknown>; compacted: boolean }> = [];
 
-    constructor(private config: RuntimeModelConfig, private options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }) {
+    constructor(private config: RuntimeModelConfig, private options: ToolChatOptions) {
         this.messages = [{ role: "system", content: options.systemInstruction }];
         this.tools = options.tools.map((rawTool) => {
             const tool = normalizeToolDeclaration(rawTool, { typeCase: "lower" });
@@ -358,12 +369,22 @@ class ChatCompletionsToolChat implements ToolChat {
             message.forEach((part, index) => {
                 const pending = this.pendingToolCalls[index];
                 if (!pending) return;
+                this.toolResults.push({ messageIndex: this.messages.length, response: part.functionResponse.response, compacted: false });
                 this.messages.push({
                     role: "tool",
                     tool_call_id: pending.id,
                     content: stringifyToolResult(part.functionResponse.response),
                 });
             });
+        }
+        const compact = this.options.compactToolResponse;
+        if (compact) {
+            const keep = this.options.keepFullToolResults ?? 2;
+            for (const result of this.toolResults.slice(0, Math.max(0, this.toolResults.length - keep))) {
+                if (result.compacted) continue;
+                result.compacted = true;
+                this.messages[result.messageIndex] = { ...this.messages[result.messageIndex], content: stringifyToolResult(compact(result.response)) };
+            }
         }
 
         const body: Record<string, unknown> = {
@@ -445,7 +466,7 @@ class ChatCompletionsToolChat implements ToolChat {
 class ChatCompletionsModelClient implements ModelClient {
     constructor(private config: RuntimeModelConfig) {}
 
-    createToolChat(options: { model: string; systemInstruction: string; tools: ToolDeclaration[] }): ToolChat {
+    createToolChat(options: ToolChatOptions): ToolChat {
         return new ChatCompletionsToolChat(this.config, options);
     }
 
