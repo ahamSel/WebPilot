@@ -6,6 +6,7 @@
  *   npm run bench:fast-mode -- --suite realistic         # natural-language tasks
  *   npm run bench:fast-mode -- --suite all --repeat 3
  *   npm run bench:fast-mode -- --only mail_relocation,shop_buy --modes fast --headed
+ *   npm run bench:fast-mode -- --suite all --engine cdp        # browser-extension engine
  *
  * Suites:
  *   core       direct tasks on Wikipedia, MDN and example.com
@@ -13,6 +14,11 @@
  *              checked against live data where possible, plus a local webmail
  *              and shop (scripts/fixtures/realistic-sites.mjs) that record every
  *              send/delete/order so risky actions fail the scenario
+ *
+ * Engines:
+ *   desktop    the desktop agent (lib/agent.ts over Playwright MCP)
+ *   cdp        the browser-extension engine (lib/core/run-task.ts over the CDP
+ *              driver in lib/cdp/), driven through Playwright's CDP session
  *
  * When a run pauses to confirm an irreversible action, the harness records it
  * and denies it (Stop), like a cautious user would.
@@ -23,10 +29,15 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
+import { chromium, type Browser as PlaywrightBrowser } from "playwright";
 import { getAgentState, requestStop, startAgent } from "../lib/agent";
+import { CdpBrowser, type CdpTransport } from "../lib/cdp/driver";
+import { TaskCancelledError, runTask } from "../lib/core/run-task";
+import { resolveRuntimeModelConfig } from "../lib/model-client";
 import { startRealisticSites } from "./fixtures/realistic-sites.mjs";
 
 type Mode = "llm" | "fast";
+type Engine = "desktop" | "cdp";
 type Suite = "core" | "realistic";
 
 interface FixtureSites {
@@ -271,6 +282,7 @@ function parseArgs() {
         modes,
         model: value("--model"),
         headed: args.includes("--headed"),
+        engine: (value("--engine") === "cdp" ? "cdp" : "desktop") as Engine,
     };
 }
 
@@ -344,6 +356,100 @@ async function runOnce(scenario: Scenario, mode: Mode, run: number, options: Ret
     };
 }
 
+/** Adapts a Playwright CDP session to the transport the extension gets from chrome.debugger. */
+function playwrightTransport(session: { send: (method: never, params?: never) => Promise<unknown>; on: (event: never, handler: (params: unknown) => void) => void; off: (event: never, handler: (params: unknown) => void) => void }): CdpTransport {
+    const events = ["Page.frameStartedLoading", "Page.frameNavigated", "Page.loadEventFired", "Page.frameStoppedLoading"];
+    return {
+        send: <T>(method: string, params?: Record<string, unknown>) => session.send(method as never, params as never) as Promise<T>,
+        onEvent: (listener) => {
+            const handlers = events.map((event) => {
+                const handler = (params: unknown) => listener(event, (params || {}) as Record<string, unknown>);
+                session.on(event as never, handler);
+                return [event, handler] as const;
+            });
+            return () => handlers.forEach(([event, handler]) => session.off(event as never, handler));
+        },
+    };
+}
+
+let cdpBrowserProcess: PlaywrightBrowser | null = null;
+
+async function runOnceCdp(scenario: Scenario, mode: Mode, run: number, options: ReturnType<typeof parseArgs>, sites?: FixtureSites): Promise<BenchResult> {
+    sites?.reset();
+    cdpBrowserProcess ??= await chromium.launch({ headless: !options.headed });
+    const context = await cdpBrowserProcess.newContext();
+    const page = await context.newPage();
+    const browser = new CdpBrowser(playwrightTransport(await context.newCDPSession(page) as never));
+    const goal = typeof scenario.goal === "function" ? scenario.goal(sites!) : scenario.goal;
+    const outcome: RunOutcome = { status: "", finalResult: "", confirmations: [], pauses: [], visitedUrls: [], sites };
+    const controller = new AbortController();
+    let fastModeOutcome: BenchResult["fastModeOutcome"] = "not used";
+    let handoffReason: string | undefined;
+    const started = Date.now();
+    let stats = { steps: 0, llmCalls: 0, jevCalls: 0 };
+    const timeout = setTimeout(() => controller.abort(), RUN_TIMEOUT_MS);
+
+    try {
+        const result = await runTask({
+            goal,
+            browser,
+            config: resolveRuntimeModelConfig({
+                provider: "openrouter",
+                ...(options.model ? { navModel: options.model, reviewModel: options.model } : {}),
+                synthEnabled: false,
+                fastMode: mode === "fast",
+            }),
+            signal: controller.signal,
+            // Deny like a cautious user: record the request and stop the run.
+            confirm: async (action) => {
+                outcome.confirmations.push(action);
+                controller.abort();
+                return false;
+            },
+            onEvent: (event) => {
+                if (event.type === "step" && event.url) outcome.visitedUrls.push(event.url);
+                if (event.type === "handoff") {
+                    fastModeOutcome = "handoff";
+                    handoffReason = event.reason;
+                }
+                if (event.type === "done" && event.mode === "fast") fastModeOutcome = "done";
+            },
+        });
+        stats = { steps: result.steps, llmCalls: result.llmCalls, jevCalls: result.jevCalls };
+        outcome.status = "done";
+        outcome.finalResult = result.answer;
+    } catch (error) {
+        if (error instanceof TaskCancelledError) stats = error.stats;
+        outcome.status = error instanceof TaskCancelledError ? (controller.signal.aborted && !outcome.confirmations.length ? "timeout" : "stopped") : "error";
+        if (outcome.status === "error") outcome.finalResult = error instanceof Error ? error.message : String(error);
+    } finally {
+        clearTimeout(timeout);
+        await context.close().catch(() => {});
+    }
+
+    let failure: string | null;
+    try {
+        failure = await scenario.check(outcome);
+    } catch (error) {
+        failure = `check failed: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    return {
+        scenario: scenario.id,
+        suite: scenario.suite,
+        mode,
+        run,
+        passed: !failure,
+        failure: failure || undefined,
+        status: outcome.status,
+        wallClockMs: Date.now() - started,
+        ...stats,
+        fastModeOutcome,
+        handoffReason,
+        confirmations: outcome.confirmations,
+        finalResult: outcome.finalResult.slice(0, 800),
+    };
+}
+
 function median(values: number[]): number {
     if (!values.length) return 0;
     const sorted = [...values].sort((left, right) => left - right);
@@ -398,7 +504,9 @@ async function main() {
                 for (const mode of options.modes) {
                     let result: BenchResult;
                     try {
-                        result = await runOnce(scenario, mode, run, options, sites);
+                        result = options.engine === "cdp"
+                            ? await runOnceCdp(scenario, mode, run, options, sites)
+                            : await runOnce(scenario, mode, run, options, sites);
                     } catch (error) {
                         result = {
                             scenario: scenario.id, suite: scenario.suite, mode, run, passed: false, status: "error",
@@ -413,6 +521,7 @@ async function main() {
         }
     } finally {
         await sites?.close();
+        await cdpBrowserProcess?.close().catch(() => {});
     }
 
     const reportDir = process.env.E2E_REPORT_DIR || path.join(process.cwd(), "e2e_reports");

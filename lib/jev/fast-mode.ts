@@ -270,6 +270,11 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
             task: options.task,
             current_page: { url: page.url, title: page.title },
             page_text_excerpt: page.text,
+            // What earlier pages showed (e.g. the price list) so Jev can judge the current one.
+            earlier_pages: pages
+                .filter((visited) => visited.url !== page.url)
+                .slice(-2)
+                .map((visited) => ({ title: visited.title, url: visited.url, text_excerpt: visited.text.slice(0, 600) })),
             element_list_truncated: clickPool.truncated || typePool.truncated,
             history: history.slice(-HISTORY_LIMIT),
         };

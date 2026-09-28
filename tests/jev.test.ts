@@ -247,18 +247,20 @@ test("fast mode asks the LLM for typed text and Jev for submit", async () => {
 
 test("Jev gates only shortcut the LLM when confident", async () => {
     mockJev([
-        () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05) }),
-        () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6) }),
+        () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05), changes_something: noul(0.9) }),
+        () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6), changes_something: noul(0.1) }),
         () => ({ answer_supported: noul(0.9) }),
         () => ({ answer_supported: noul(0.05) }),
     ]);
     const confident = await jevPreflight(JEV, "Go to example.com", "");
     assert.equal(confident.browse, true);
     assert.equal(confident.parallel, false);
+    assert.equal(confident.changesSomething, true);
 
     const unsure = await jevPreflight(JEV, "hmm", "");
     assert.equal(unsure.browse, undefined);
     assert.equal(unsure.parallel, undefined);
+    assert.equal(unsure.changesSomething, false);
 
     assert.equal((await jevCheckAnswer(JEV, "task", "answer", "https://x", "text")).accept, true);
     assert.equal((await jevCheckAnswer(JEV, "task", "answer", "https://x", "text")).accept, undefined, "Jev never rejects on its own");
