@@ -237,8 +237,9 @@ function ConfirmCard({ pending, onAnswer }: { pending: PendingConfirm; onAnswer:
             </p>
             <div className="row">
                 <button className="btn primary" onClick={() => onAnswer(true)}>Allow</button>
-                <button className="btn" onClick={() => onAnswer(false)}>Cancel</button>
+                <button className="btn" onClick={() => onAnswer(false)}>Skip</button>
             </div>
+            <p className="hint">Skip leaves this undone and carries on with the rest. The stop button ends the task.</p>
         </div>
     );
 }

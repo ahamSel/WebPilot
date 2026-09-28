@@ -292,6 +292,57 @@ test("when a Jev call fails, the LLM picks that step", async () => {
     assert.deepEqual(calls, ["click e7"]);
 });
 
+test("for a find-or-read request, Jev is never offered buttons that send, buy or delete", async () => {
+    const requests = mockJev([() => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.02) })]);
+    const { browser } = fakeBrowser({ home: HOME }, "home");
+    await runFastMode({ ...fastModeOptions(browser), allowIrreversible: false });
+    const criteria = requests[0].body.questions.action.criteria || {};
+    assert.ok(!("click_e11" in criteria), "\"Buy now\" is not an option");
+    assert.ok("click_e7" in criteria);
+});
+
+test("a declined click is skipped, Jev carries on, and it isn't offered again", async () => {
+    const requests = mockJev([
+        () => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("click_e7"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.97), stuck: noul(0.02) }),
+    ]);
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const declined = new Set<string>();
+    const asked: string[] = [];
+    const result = await runFastMode({
+        ...fastModeOptions(browser),
+        declined,
+        confirm: async (action) => {
+            asked.push(action);
+            declined.add(action);
+            return false;
+        },
+    });
+
+    assert.equal(result.outcome, "done");
+    assert.deepEqual(asked, ["button \"Buy now\""]);
+    assert.deepEqual(calls, ["click e7"], "Buy now was never clicked");
+    assert.match(result.history[0].outcome, /declined by the user/);
+    assert.ok(!("click_e11" in (requests[1].body.questions.action.criteria || {})), "not offered again");
+});
+
+test("a field the task gives nothing to type into is skipped, and Jev carries on", async () => {
+    const requests = mockJev([
+        () => ({ action: choice("type_e8"), goal_done: noul(0.05), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("click_e7"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.97), stuck: noul(0.02) }),
+    ]);
+    const writer = { generateText: async () => "NONE", createToolChat: () => { throw new Error("unused"); } } as unknown as ModelClient;
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const result = await runFastMode(fastModeOptions(browser, writer));
+
+    assert.equal(result.outcome, "done");
+    assert.deepEqual(calls, ["click e7"], "nothing was typed");
+    assert.match(result.history[0].outcome, /nothing to type/);
+    assert.ok(!("type_e8" in (requests[1].body.questions.action.criteria || {})), "the field isn't offered again on that page");
+});
+
 test("fast mode hands irreversible clicks to the planner", async () => {
     mockJev([() => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) })]);
     const { browser, calls } = fakeBrowser({ home: HOME }, "home");

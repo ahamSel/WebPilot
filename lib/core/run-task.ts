@@ -12,7 +12,7 @@
 
 import { createModelClient, resolveJevConfig, type RuntimeModelConfig, type ToolResponsePart } from "../model-client";
 import { extractExplicitUrls } from "../goal-urls";
-import { runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult, type FastModeStep } from "../jev/fast-mode";
+import { DECLINED_OUTCOME, NOTHING_TO_TYPE_OUTCOME, runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult, type FastModeStep } from "../jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../jev/gates";
 import { describeElement, parsePage, selectCandidates, type PageModel } from "../jev/page";
 import { CREDENTIALS_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
@@ -27,7 +27,8 @@ export interface TaskBrowser extends FastModeBrowser {
 
 export type TaskEvent =
     | { type: "status"; message: string }
-    | { type: "step"; source: "jev" | "llm"; action: string; detail?: string; url?: string }
+    /** `status`: the step wasn't done: the user declined it, WebPilot skipped it (not asked for), or it failed. */
+    | { type: "step"; source: "jev" | "llm"; action: string; detail?: string; url?: string; status?: "declined" | "skipped" | "failed" }
     | { type: "handoff"; reason: string }
     | { type: "confirm"; action: string; url: string }
     /** Streamed answer text; `answer-reset` discards it when the answer is redone. */
@@ -56,6 +57,8 @@ export interface RunTaskOptions {
      * New Tab page) and no site is obvious. `{query}` is replaced with the request.
      */
     fallbackSearchUrl?: string;
+    /** The user's browser language and time zone, so sites are picked for their country (walmart.ca, not .com). */
+    locale?: { language?: string; timeZone?: string };
 }
 
 /**
@@ -84,14 +87,6 @@ export interface RunTaskResult {
     jevCalls: number;
     llmCalls: number;
     durationMs: number;
-}
-
-/** The user cancelled an irreversible action; the task ends there. */
-class ActionDeclinedError extends Error {
-    constructor(public action: string) {
-        super(`Declined ${action}`);
-        this.name = "ActionDeclinedError";
-    }
 }
 
 export class TaskCancelledError extends Error {
@@ -135,6 +130,13 @@ const DELEGATE_TOOL = {
 /** After this long, the planner is asked to wrap up with what it has. */
 const PLANNER_WRAP_UP_MS = 60_000;
 const FAST_ANSWER_ESCALATE_BELOW = 0.3;
+
+/** Where the user is, from their browser settings, so sites and results suit their country. */
+function describeLocale(locale: RunTaskOptions["locale"]): string {
+    if (!locale?.language && !locale?.timeZone) return "";
+    const parts = [locale.language ? `language ${locale.language}` : "", locale.timeZone ? `time zone ${locale.timeZone}` : ""].filter(Boolean).join(", ");
+    return `The user's browser is set to ${parts}: prefer their country's version of a site (such as walmart.ca or amazon.ca for Canada) and local results, unless they name another.`;
+}
 
 /** "Monday, September 28, 2026": lets answers and checks resolve "today", "this week", "recent". */
 export function todayLabel(date = new Date()): string {
@@ -227,17 +229,6 @@ export async function runTask(options: RunTaskOptions): Promise<RunTaskResult> {
             await recordEnd();
             throw new TaskCancelledError({ ...stats }, memory);
         }
-        if (error instanceof ActionDeclinedError) {
-            // Cancel on a confirmation ends the task, remembering how far it got so a
-            // follow-up like "ok, go ahead" can continue.
-            const page = await options.browser.pageInfo().catch(() => ({ url: "", title: "" }));
-            memory.finalUrl = page.url || undefined;
-            memory.finalTitle = page.title || undefined;
-            const done = memory.actions.slice(-3).join("; ");
-            const answer = `Okay, I stopped before clicking ${error.action}, so nothing was submitted.${done ? ` Up to that point: ${done}.` : ""} Say "go ahead" if you want me to continue.`;
-            options.onEvent?.({ type: "done", answer, mode: "planner" });
-            return { answer, mode: "planner", memory, ...stats, durationMs: Date.now() - started };
-        }
         await recordEnd();
         throw new TaskFailedError(error instanceof Error ? error.message : String(error), memory, { ...stats });
     }
@@ -261,16 +252,21 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
     const jevSetup = config.fastMode ? resolveJevConfig(config) : null;
     const jev = jevSetup && "jev" in jevSetup ? jevSetup.jev : null;
     const conversation = formatHistory(options.history);
+    const userLocale = describeLocale(options.locale);
 
     const checkCancelled = async () => {
         if (options.signal?.aborted) throw new TaskCancelledError({ ...stats });
     };
-    const confirmOrCancel = async (action: string, url: string) => {
+    // Actions the user said no to (by their confirmation text): skipped, and never
+    // offered or asked about again during this task; the rest of the task carries on.
+    const declined = new Set<string>();
+    const confirmAction = async (action: string, url: string): Promise<boolean> => {
+        if (declined.has(action)) return false;
         emit({ type: "confirm", action, url });
         const allowed = await options.confirm(action, url);
         await checkCancelled();
-        if (!allowed) throw new ActionDeclinedError(action);
-        return true;
+        if (!allowed) declined.add(action);
+        return allowed;
     };
     const finish = async (answer: string, mode: RunTaskResult["mode"]): Promise<RunTaskResult> => {
         if (browsed) {
@@ -311,7 +307,7 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
         const routeText = await llm.generateText({
             model: config.navModel,
             systemInstruction: `You route requests for WebPilot, an assistant that lives in the user's browser and can control the current tab. Return JSON only. ${UNTRUSTED_CONTENT_RULE}`,
-            prompt: `${conversation ? `Conversation so far:\n${conversation}\n\n` : ""}Current tab: ${current.title || "(none)"} ${current.url || ""}
+            prompt: `${conversation ? `Conversation so far:\n${conversation}\n\n` : ""}Current tab: ${current.title || "(none)"} ${current.url || ""}${userLocale ? `\n${userLocale}` : ""}
 
 User message: ${goal}
 
@@ -352,7 +348,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
         const suggestion = await llm.generateText({
             model: config.navModel,
             systemInstruction: "You pick where a browser task should start. Reply with STAY when the task is about the web page the user already has open (or can be done from it); otherwise reply with one absolute https URL, such as the site the task names or a good search page. Reply with nothing else.",
-            prompt: `Task: ${browserGoal}\nCurrent tab: ${onWebPage ? `${current.title || "(untitled)"} ${current.url}` : "a browser page with no website (such as the New Tab page); STAY is not possible"}`,
+            prompt: `Task: ${browserGoal}\nCurrent tab: ${onWebPage ? `${current.title || "(untitled)"} ${current.url}` : "a browser page with no website (such as the New Tab page); STAY is not possible"}${userLocale ? `\n${userLocale}` : ""}`,
         });
         stats.llmCalls++;
         let url = extractExplicitUrls(suggestion)[0];
@@ -423,7 +419,10 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
             trace(action, { run: label, ...(data && typeof data === "object" ? data as Record<string, unknown> : {}) });
         },
         checkStop: checkCancelled,
-        confirm: confirmOrCancel,
+        confirm: confirmAction,
+        declined,
+        // Finding or reading never sends, buys or deletes.
+        allowIrreversible: changesSomething,
         onStep: async (step: FastModeStep) => {
             stats.steps++;
             emit({
@@ -434,6 +433,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
                     ? step.target.description + (step.text ? ` ← "${step.text}"` : "")
                     : step.operation === "navigate" ? step.page.url : undefined,
                 url: step.page.url,
+                ...(step.ok ? {} : { status: step.error === DECLINED_OUTCOME ? "declined" as const : step.error === NOTHING_TO_TYPE_OUTCOME ? "skipped" as const : "failed" as const }),
             });
         },
     });
@@ -455,7 +455,9 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
             noDoneOn: pass === 2 && fast ? fast.page.url : undefined,
         });
 
-        if (fast.outcome === "done") {
+        // Out of steps with several pages read (a list and a few listings): they may
+        // already answer it; the check decides before the slow planner is involved.
+        if (fast.outcome === "done" || (fast.exhausted && fast.pages.length > 1)) {
             emit({ type: "status", message: "Writing the answer" });
             const pageText = await browser.pageText(12_000);
             const answer = (await writeFastModeAnswer(llm, config.navModel, browserGoal, fast, pageText, streamAnswer)).trim();
@@ -480,7 +482,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
             emit({ type: "answer-reset" });
             const problem = checkProblem(scores);
             handoff = `${summarizeFastModeForPlanner(fast)}\nFast mode proposed an answer, but ${problem}. ${/every part|whole request/.test(problem) ? "Find what's missing" : "Verify it on the pages"} before finishing.\nProposed answer: ${answer.slice(0, 800)}`;
-            if (pass === 1) continue;
+            if (pass === 1 && !fast.exhausted) continue;
             emit({ type: "handoff", reason: `Fast mode's answer fell short: ${problem}.` });
         } else {
             handoff = summarizeFastModeForPlanner(fast);
@@ -500,7 +502,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
         compactToolResponse: compactPlannerResult,
         onText: streamAnswer,
         onTextReset: () => emit({ type: "answer-reset" }),
-        systemInstruction: `You are WebPilot, a browser agent working in the user's own browser tab. Today is ${todayLabel()}. Task: ${browserGoal}
+        systemInstruction: `You are WebPilot, a browser agent working in the user's own browser tab. Today is ${todayLabel()}.${userLocale ? ` ${userLocale}` : ""} Task: ${browserGoal}
 
 Tools: observe() returns the page's actionable elements as [ref] descriptions plus page text. click({ref, element}) and type({ref, text, submit?}) act on refs from the latest observe(). navigate({url}), scroll({direction}), wait({seconds}). When you have the answer, reply to the user with it as a normal message, not a tool call: that ends the task, and the user sees it as you write it.${jev ? `
 delegate({goal}) hands a sub-goal to Jev, a fast navigation model. You think and decide; Jev does the legwork.` : ""}
@@ -533,6 +535,7 @@ Rules:${jev ? `
         for (const call of response.functionCalls) {
             const args = call.args as Record<string, unknown>;
             let result: Record<string, unknown>;
+            let stepStatus: "declined" | "skipped" | "failed" | undefined;
             try {
                 if (call.name === "finish") {
                     return finish(String(args.result || response.text || "").trim(), "planner");
@@ -544,11 +547,19 @@ Rules:${jev ? `
                     const ref = String(args.ref || "");
                     const element = lastPage.elements.find((candidate) => candidate.ref === ref);
                     const candidate = element ? { role: element.role, label: element.name } : { label: String(args.element || "") };
-                    const risky = irreversibleAction(candidate) || signInAction(lastPage, candidate);
-                    // Declining throws and ends the task.
-                    if (risky) await confirmOrCancel(risky, lastPage.url);
-                    await browser.click(ref, String(args.element || ""));
-                    result = { ok: true };
+                    const irreversible = irreversibleAction(candidate);
+                    const risky = irreversible || signInAction(lastPage, candidate);
+                    if (irreversible && !changesSomething) {
+                        // Not asked for: finding or reading never sends, buys or deletes.
+                        stepStatus = "skipped";
+                        result = { ok: false, error: `The user only asked to find or read information, so WebPilot won't click ${irreversible}: it would change something for them. Carry on without it.` };
+                    } else if (risky && !await confirmAction(risky, lastPage.url)) {
+                        stepStatus = "declined";
+                        result = { ok: false, error: "The user declined this, so it was not done. Don't try it or anything equivalent again; carry on with any other part of the task, or answer with what was done and what was skipped." };
+                    } else {
+                        await browser.click(ref, String(args.element || ""));
+                        result = { ok: true };
+                    }
                 } else if (call.name === "type") {
                     const field = lastPage.elements.find((candidate) => candidate.ref === String(args.ref || ""));
                     if (field && isSecretField(field)) {
@@ -589,12 +600,13 @@ Rules:${jev ? `
                     result = { ok: false, error: `Unknown tool ${call.name}` };
                 }
             } catch (error) {
-                if (error instanceof TaskCancelledError || error instanceof ActionDeclinedError) throw error;
+                if (error instanceof TaskCancelledError) throw error;
+                stepStatus = "failed";
                 result = { ok: false, error: error instanceof Error ? error.message.slice(0, 300) : String(error) };
             }
             if (call.name !== "observe" && call.name !== "delegate") {
                 stats.steps++;
-                emit({ type: "step", source: "llm", action: call.name, detail: String(args.element || args.url || args.text || ""), url: lastPage.url });
+                emit({ type: "step", source: "llm", action: call.name, detail: String(args.element || args.url || args.text || ""), url: lastPage.url, ...(stepStatus ? { status: stepStatus } : {}) });
             }
             trace("planner_tool", { name: call.name, args, ok: result.ok, error: result.error });
             outputs.push({ functionResponse: { name: call.name, response: result } });

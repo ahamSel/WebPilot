@@ -296,6 +296,27 @@ async function postChatCompletion(
     return json;
 }
 
+/**
+ * Whether a failed call is worth one more try: providers sometimes drop a
+ * request mid-stream or report an upstream error inside a 200 response. Not
+ * when the user stopped, or for requests the provider rejected as invalid.
+ */
+function worthRetrying(config: RuntimeModelConfig, error: unknown): boolean {
+    if (config.signal?.aborted) return false;
+    const message = error instanceof Error ? error.message : String(error);
+    return !/request failed \(4(?!08|29)\d\d\)/.test(message);
+}
+
+/** Runs a model call, retrying once after a transient failure. */
+async function withRetry<T>(config: RuntimeModelConfig, call: (attempt: number) => Promise<T>): Promise<T> {
+    try {
+        return await call(0);
+    } catch (error) {
+        if (!worthRetrying(config, error)) throw error;
+        return await call(1);
+    }
+}
+
 /** The `delta` of each server-sent event of a streamed chat completion. */
 async function* streamDeltas(config: RuntimeModelConfig, body: Record<string, unknown>): AsyncGenerator<Record<string, unknown>> {
     const response = await openChatCompletion(config, { ...body, stream: true });
@@ -338,13 +359,22 @@ async function streamChatCompletion(
     onDelta: (text: string) => void
 ): Promise<string> {
     let full = "";
-    for await (const delta of streamDeltas(config, body)) {
-        if (typeof delta.content === "string" && delta.content) {
-            full += delta.content;
-            onDelta(delta.content);
+    const attempt = async () => {
+        for await (const delta of streamDeltas(config, body)) {
+            if (typeof delta.content === "string" && delta.content) {
+                full += delta.content;
+                onDelta(delta.content);
+            }
         }
+        return full;
+    };
+    try {
+        return await attempt();
+    } catch (error) {
+        // Retry only if nothing reached the reader yet: shown text can't be taken back here.
+        if (full || !worthRetrying(config, error)) throw error;
+        return await attempt();
     }
-    return full;
 }
 
 /** Streamed reasoning items with the same index are pieces of one item. */
@@ -475,9 +505,14 @@ class ChatCompletionsToolChat implements ToolChat {
             if (this.config.provider === "openrouter") body.tool_choice = "auto";
         }
 
-        const messageObj = this.options.onText && this.config.provider === "openrouter"
-            ? await streamToolTurn(this.config, body, this.options.onText, this.options.onTextReset || (() => {}))
-            : firstChoiceMessage(await postChatCompletion(this.config, body));
+        const stream = !!this.options.onText && this.config.provider === "openrouter";
+        const messageObj = await withRetry(this.config, async (attempt) => {
+            // Text shown by a failed attempt is withdrawn before trying again.
+            if (attempt > 0 && stream) this.options.onTextReset?.();
+            return stream
+                ? await streamToolTurn(this.config, body, this.options.onText!, this.options.onTextReset || (() => {}))
+                : firstChoiceMessage(await postChatCompletion(this.config, body));
+        });
         const toolCallsRaw = Array.isArray(messageObj.tool_calls) ? messageObj.tool_calls as Array<Record<string, unknown>> : [];
         const text = normalizeContent(messageObj.content);
         const reasoningDetails = Array.isArray(messageObj.reasoning_details) && messageObj.reasoning_details.length
@@ -544,7 +579,7 @@ class ChatCompletionsModelClient implements ModelClient {
     }
 
     async generateText(options: GenerateTextOptions): Promise<string> {
-        const response = await postChatCompletion(this.config, this.textBody(options));
+        const response = await withRetry(this.config, () => postChatCompletion(this.config, this.textBody(options)));
         return normalizeContent(firstChoiceMessage(response).content);
     }
 

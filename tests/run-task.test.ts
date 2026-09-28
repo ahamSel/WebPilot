@@ -53,22 +53,28 @@ function chatResponse(message: Record<string, unknown>, stream: boolean): Respon
 }
 
 /** Routes Jev decisions and chat completions to canned responses. */
-function mockServices(chatReplies: Array<Record<string, unknown>>) {
+function mockServices(chatReplies: Array<Record<string, unknown>>, jev: { changesSomething?: number; fastMode?: { action: string } } = {}) {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
         if (!url.endsWith("/systemone")) return chatResponse(chatReplies.shift() || { content: "done" }, JSON.parse(String(init?.body || "{}")).stream === true);
-        const body = { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } }, usage: {} };
-        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        const request = JSON.parse(String(init?.body || "{}")) as { questions: Record<string, unknown> };
+        const answers = "action" in request.questions
+            ? { action: { type: "choice", choice: jev.fastMode?.action || "done", confidence: 0.9, probabilities: { [jev.fastMode?.action || "done"]: 0.9 } }, goal_done: { type: "noul", noul: 0.05 }, stuck: { type: "noul", noul: 0.1 } }
+            : { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: jev.changesSomething ?? 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } };
+        return new Response(JSON.stringify({ model: "jev", answers, usage: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
 }
 
-test("declining a confirmation ends the task and remembers where it stopped", async () => {
+test("a declined click is skipped, never asked again, and the task carries on", async () => {
     mockServices([
         { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
-        { content: "should not be reached" },
+        // The model tries again; the decline stands without asking.
+        { content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
+        { content: "I didn't buy the Trailhead 2P ($89.99): you skipped the purchase." },
     ]);
     const log: string[] = [];
     const asked: string[] = [];
+    const statuses: string[] = [];
     const result = await runTask({
         goal: "buy the tent at https://shop.example/p/tent",
         config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
@@ -77,13 +83,47 @@ test("declining a confirmation ends the task and remembers where it stopped", as
             asked.push(action);
             return false;
         },
+        onEvent: (event) => {
+            if (event.type === "step" && event.status) statuses.push(`${event.status} ${event.action}`);
+        },
     });
 
-    assert.deepEqual(asked, ["button \"Buy now\""]);
+    assert.deepEqual(asked, ["button \"Buy now\""], "asked once");
     assert.deepEqual(log, ["navigate https://shop.example/p/tent"], "the Buy button was never clicked");
-    assert.match(result.answer, /stopped before clicking button "Buy now"/);
-    assert.equal(result.memory.finalUrl, "https://shop.example/p/tent");
+    assert.deepEqual(statuses, ["declined click", "declined click"]);
+    assert.match(result.answer, /skipped the purchase/);
 });
+
+test("a request that only finds information never clicks buy or send, and never asks", async () => {
+    mockServices([
+        // Fast mode's advisor sends the task to the planner...
+        { content: "{\"action\": \"handoff\", \"reason\": \"needs a closer look\"}" },
+        // ...which tries to buy anyway.
+        { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
+        { content: "The Trailhead 2P costs $89.99." },
+    ], { changesSomething: 0.02, fastMode: { action: "blocked" } });
+    const log: string[] = [];
+    const asked: string[] = [];
+    const statuses: string[] = [];
+    const result = await runTask({
+        goal: "how much is the tent at https://shop.example/p/tent ?",
+        config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
+        browser: fakeBrowser(log),
+        confirm: async (action) => {
+            asked.push(action);
+            return true;
+        },
+        onEvent: (event) => {
+            if (event.type === "step" && event.status) statuses.push(`${event.status} ${event.action}`);
+        },
+    });
+
+    assert.deepEqual(asked, [], "never asked");
+    assert.deepEqual(log, ["navigate https://shop.example/p/tent"], "never clicked");
+    assert.deepEqual(statuses, ["skipped click"]);
+    assert.match(result.answer, /89\.99/);
+});
+
 
 test("a guessed start site that doesn't load falls back to a search", async () => {
     mockServices([

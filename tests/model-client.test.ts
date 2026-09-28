@@ -225,6 +225,32 @@ test("streamed tool turns report text as written and rebuild tool calls and reas
     assert.deepEqual(replayed?.tool_calls, [{ id: "call_1", type: "function", function: { name: "observe", arguments: "{\"full\":true}" } }]);
 });
 
+test("a tool turn that fails mid-stream is withdrawn and retried once", async () => {
+    const sse = (events: Array<Record<string, unknown>>) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
+    const replies = [
+        // The provider drops the request partway through the answer.
+        sse([{ choices: [{ delta: { content: "Here are three" } }] }, { error: { message: "The operation was aborted" } }]),
+        sse([{ choices: [{ delta: { content: "Here are three rentals." } }] }]),
+    ];
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls++;
+        return new Response(replies.shift(), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const shown: string[] = [];
+    const chat = createModelClient(openRouterConfig()).createToolChat({
+        model: "google/gemini-3.8-flash",
+        systemInstruction: "system",
+        tools: getBrowserToolDeclarations(),
+        onText: (text) => shown.push(text),
+        onTextReset: () => shown.push("<reset>"),
+    });
+    const reply = await chat.sendMessage("find rentals");
+    assert.equal(calls, 2);
+    assert.equal(reply.text, "Here are three rentals.");
+    assert.deepEqual(shown, ["Here are three", "<reset>", "Here are three rentals."]);
+});
+
 test("Ollama requests omit OpenRouter-only fields", async () => {
     const requests = mockFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
     const client = createModelClient(resolveRuntimeModelConfig({ provider: "ollama", navModel: "qwen3:8b" }));

@@ -245,6 +245,7 @@ export class Engine {
                     hooks.confirm?.(action, url).then(settle, () => settle(false));
                 }),
                 onTrace: addTrace,
+                locale: { language: navigator.language, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone },
                 onEvent: (event) => {
                     hooks.onEvent?.(event);
                     if (event.type !== "answer-delta" && event.type !== "answer-reset") {
@@ -252,7 +253,8 @@ export class Engine {
                         addTrace(type, type === "done" ? { mode: event.mode } : data);
                     }
                     if (event.type === "step") {
-                        addStep({ lane: event.source, label: ACTION_LABELS[event.action] || event.action, detail: event.detail ? event.detail.slice(0, 140) : undefined });
+                        const label = ACTION_LABELS[event.action] || event.action;
+                        addStep({ lane: event.source, label: event.status ? `${event.status}: ${label}` : label, detail: event.detail ? event.detail.slice(0, 140) : undefined });
                     } else if (event.type === "handoff") {
                         addStep({ lane: "note", label: "handing to the model", detail: event.reason });
                     } else if (event.type === "status") {
