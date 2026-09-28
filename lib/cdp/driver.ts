@@ -22,6 +22,8 @@ export interface CdpTransport {
 const NAVIGATION_START_WINDOW_MS = 400;
 const LOAD_TIMEOUT_MS = 12_000;
 const SETTLE_MS = 250;
+/** How long a navigation request may take to start loading before it's treated as same-document. */
+const NAVIGATION_REQUEST_GRACE_MS = 1500;
 const NAVIGATE_RESPONSE_TIMEOUT_MS = 10_000;
 
 const KEY_CODES: Record<string, { code: string; keyCode: number; text?: string }> = {
@@ -38,8 +40,18 @@ function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Thrown when refs from the last snapshot would act on a page that has since changed. */
+export const STALE_PAGE_MESSAGE = "The page changed since the last snapshot. Take a new snapshot.";
+
 export class CdpBrowser implements FastModeBrowser {
     private enabled = false;
+    private mainFrameId: string | null = null;
+    /** The main frame is loading a new document. */
+    private loading = false;
+    /** When the page asked to navigate; a request that never starts loading (same-document) expires. */
+    private navigationRequestedAt = 0;
+    /** The main frame started navigating after the last snapshot, so its refs may point at the old page. */
+    private navigatedSinceSnapshot = false;
 
     constructor(private transport: CdpTransport) {}
 
@@ -48,7 +60,46 @@ export class CdpBrowser implements FastModeBrowser {
         await this.transport.send("Page.enable");
         await this.transport.send("DOM.enable");
         await this.transport.send("Accessibility.enable");
+        const { frameTree } = await this.transport.send<{ frameTree: { frame: { id: string } } }>("Page.getFrameTree");
+        this.mainFrameId = frameTree.frame.id;
+        // Sites often navigate a moment after an action (a search that submits
+        // after its suggestions load). Tracking it lets clicks and typing refuse
+        // refs from a snapshot of the page being left.
+        this.transport.onEvent((method, params) => {
+            const frameId = typeof params.frameId === "string" ? params.frameId : undefined;
+            const frame = (params.frame || {}) as { id?: string; parentId?: string };
+            const main = frameId === undefined || frameId === this.mainFrameId;
+            if (method === "Page.frameRequestedNavigation" && main && params.disposition === "currentTab") {
+                this.navigationRequestedAt = Date.now();
+                this.navigatedSinceSnapshot = true;
+            } else if (method === "Page.frameStartedLoading" && main) {
+                this.loading = true;
+                this.navigatedSinceSnapshot = true;
+            } else if (method === "Page.frameNavigated" && !frame.parentId) {
+                if (frame.id) this.mainFrameId = frame.id;
+                this.navigatedSinceSnapshot = true;
+            } else if (method === "Page.navigatedWithinDocument" && main) {
+                this.navigationRequestedAt = 0;
+            } else if ((method === "Page.frameStoppedLoading" && main) || method === "Page.loadEventFired" || method === "Inspector.detached") {
+                this.loading = false;
+                this.navigationRequestedAt = 0;
+            }
+        });
         this.enabled = true;
+    }
+
+    /**
+     * Before acting on a ref: if the page navigated since the snapshot the ref
+     * came from, wait for the new page and ask for a fresh snapshot instead of
+     * clicking on (or typing into) the page being left.
+     */
+    private async ensureSnapshotCurrent() {
+        if (!this.navigatedSinceSnapshot) return;
+        const deadline = Date.now() + LOAD_TIMEOUT_MS;
+        const pending = () => this.loading || (this.navigationRequestedAt > 0 && Date.now() - this.navigationRequestedAt < NAVIGATION_REQUEST_GRACE_MS);
+        while (pending() && Date.now() < deadline) await sleep(50);
+        await sleep(SETTLE_MS);
+        throw new Error(STALE_PAGE_MESSAGE);
     }
 
     async pageInfo(): Promise<{ url: string; title: string }> {
@@ -61,6 +112,7 @@ export class CdpBrowser implements FastModeBrowser {
 
     async snapshot(): Promise<string> {
         await this.enable();
+        this.navigatedSinceSnapshot = false;
         const [{ nodes }, page] = await Promise.all([
             this.transport.send<{ nodes: AXNode[] }>("Accessibility.getFullAXTree"),
             this.pageInfo(),
@@ -122,6 +174,8 @@ export class CdpBrowser implements FastModeBrowser {
 
     async click(ref: string): Promise<string> {
         const backendNodeId = await this.resolve(ref);
+        await this.enable();
+        await this.ensureSnapshotCurrent();
         await this.withSettle(async () => {
             const point = await this.center(backendNodeId);
             if (!point) {
@@ -139,6 +193,8 @@ export class CdpBrowser implements FastModeBrowser {
 
     async type(ref: string, _element: string, text: string, submit: boolean): Promise<string> {
         const backendNodeId = await this.resolve(ref);
+        await this.enable();
+        await this.ensureSnapshotCurrent();
         await this.withSettle(async () => {
             await this.transport.send("DOM.scrollIntoViewIfNeeded", { backendNodeId }).catch(() => {});
             await this.transport.send("DOM.focus", { backendNodeId });

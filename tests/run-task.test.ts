@@ -32,24 +32,49 @@ function fakeBrowser(log: string[]): TaskBrowser {
     };
 }
 
+/**
+ * A chat completion reply, as JSON or (for streamed requests, like the
+ * planner's) as server-sent events split the way OpenRouter sends them.
+ */
+function chatResponse(message: Record<string, unknown>, stream: boolean): Response {
+    if (!stream) return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    const deltas: Array<Record<string, unknown>> = [];
+    if (Array.isArray(message.tool_calls)) {
+        (message.tool_calls as Array<Record<string, unknown>>).forEach((call, index) => {
+            const fn = call.function as { name: string; arguments: string };
+            deltas.push({ tool_calls: [{ index, id: call.id, type: "function", function: { name: fn.name, arguments: "" } }] });
+            deltas.push({ tool_calls: [{ index, function: { arguments: fn.arguments } }] });
+        });
+    }
+    const content = typeof message.content === "string" ? message.content : "";
+    for (let at = 0; at < content.length; at += 12) deltas.push({ content: content.slice(at, at + 12) });
+    const events = deltas.map((delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join("") + "data: [DONE]\n\n";
+    return new Response(events, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 /** Routes Jev decisions and chat completions to canned responses. */
-function mockServices(chatReplies: Array<Record<string, unknown>>) {
-    globalThis.fetch = (async (input: string | URL | Request) => {
+function mockServices(chatReplies: Array<Record<string, unknown>>, jev: { changesSomething?: number; fastMode?: { action: string } } = {}) {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
-        const body = url.endsWith("/systemone")
-            ? { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } }, usage: {} }
-            : { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
-        return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+        if (!url.endsWith("/systemone")) return chatResponse(chatReplies.shift() || { content: "done" }, JSON.parse(String(init?.body || "{}")).stream === true);
+        const request = JSON.parse(String(init?.body || "{}")) as { questions: Record<string, unknown> };
+        const answers = "action" in request.questions
+            ? { action: { type: "choice", choice: jev.fastMode?.action || "done", confidence: 0.9, probabilities: { [jev.fastMode?.action || "done"]: 0.9 } }, goal_done: { type: "noul", noul: 0.05 }, stuck: { type: "noul", noul: 0.1 } }
+            : { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: jev.changesSomething ?? 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } };
+        return new Response(JSON.stringify({ model: "jev", answers, usage: {} }), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
 }
 
-test("declining a confirmation ends the task and remembers where it stopped", async () => {
+test("a declined click is skipped, never asked again, and the task carries on", async () => {
     mockServices([
         { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
-        { content: "should not be reached" },
+        // The model tries again; the decline stands without asking.
+        { content: null, tool_calls: [{ id: "c2", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
+        { content: "I didn't buy the Trailhead 2P ($89.99): you skipped the purchase." },
     ]);
     const log: string[] = [];
     const asked: string[] = [];
+    const statuses: string[] = [];
     const result = await runTask({
         goal: "buy the tent at https://shop.example/p/tent",
         config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
@@ -58,13 +83,47 @@ test("declining a confirmation ends the task and remembers where it stopped", as
             asked.push(action);
             return false;
         },
+        onEvent: (event) => {
+            if (event.type === "step" && event.status) statuses.push(`${event.status} ${event.action}`);
+        },
     });
 
-    assert.deepEqual(asked, ["button \"Buy now\""]);
+    assert.deepEqual(asked, ["button \"Buy now\""], "asked once");
     assert.deepEqual(log, ["navigate https://shop.example/p/tent"], "the Buy button was never clicked");
-    assert.match(result.answer, /stopped before clicking button "Buy now"/);
-    assert.equal(result.memory.finalUrl, "https://shop.example/p/tent");
+    assert.deepEqual(statuses, ["declined click", "declined click"]);
+    assert.match(result.answer, /skipped the purchase/);
 });
+
+test("a request that only finds information never clicks buy or send, and never asks", async () => {
+    mockServices([
+        // Fast mode's advisor sends the task to the planner...
+        { content: "{\"action\": \"handoff\", \"reason\": \"needs a closer look\"}" },
+        // ...which tries to buy anyway.
+        { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "click", arguments: JSON.stringify({ ref: "b11", element: "Buy now" }) } }] },
+        { content: "The Trailhead 2P costs $89.99." },
+    ], { changesSomething: 0.02, fastMode: { action: "blocked" } });
+    const log: string[] = [];
+    const asked: string[] = [];
+    const statuses: string[] = [];
+    const result = await runTask({
+        goal: "how much is the tent at https://shop.example/p/tent ?",
+        config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
+        browser: fakeBrowser(log),
+        confirm: async (action) => {
+            asked.push(action);
+            return true;
+        },
+        onEvent: (event) => {
+            if (event.type === "step" && event.status) statuses.push(`${event.status} ${event.action}`);
+        },
+    });
+
+    assert.deepEqual(asked, [], "never asked");
+    assert.deepEqual(log, ["navigate https://shop.example/p/tent"], "never clicked");
+    assert.deepEqual(statuses, ["skipped click"]);
+    assert.match(result.answer, /89\.99/);
+});
+
 
 test("a guessed start site that doesn't load falls back to a search", async () => {
     mockServices([
@@ -135,12 +194,13 @@ test("the planner splits a multi-part request and delegates each part to Jev", a
                 body = { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.02 }, multiple_parts: { type: "noul", noul: 0.9 } }, usage: {} };
             }
         } else {
-            body = { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
+            return chatResponse(chatReplies.shift() || { content: "done" }, JSON.parse(String(init?.body || "{}")).stream === true);
         }
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
 
     const events: string[] = [];
+    let streamed = "";
     const result = await runTask({
         goal: "what does the tent at https://shop.example/p/tent cost, and how much does it weigh?",
         config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
@@ -148,10 +208,12 @@ test("the planner splits a multi-part request and delegates each part to Jev", a
         confirm: async () => false,
         onEvent: (event) => {
             if (event.type === "step") events.push(`${event.source} ${event.action} ${event.detail || ""}`.trim());
+            if (event.type === "answer-delta") streamed += event.text;
         },
     });
 
     assert.equal(result.mode, "planner");
+    assert.equal(streamed, result.answer, "the planner's answer streamed in as it was written");
     assert.match(result.answer, /89\.99.*2\.1 kg/);
     assert.deepEqual(fastModeTasks, ["find the tent's price", "find the tent's weight"], "each part went to Jev as its own sub-goal");
     assert.deepEqual(events.filter((event) => event.includes("delegate")), ["llm delegate find the tent's price", "llm delegate find the tent's weight"]);

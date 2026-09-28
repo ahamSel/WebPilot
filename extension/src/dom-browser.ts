@@ -1,5 +1,6 @@
 /// <reference types="chrome" />
 
+import { STALE_PAGE_MESSAGE } from "../../lib/cdp/driver";
 import { axTreeToSnapshot } from "../../lib/cdp/snapshot";
 import type { TaskBrowser } from "../../lib/core/run-task";
 import { clickElement, pressKeyInPage, readPageText, snapshotPage, typeIntoElement, waitForQuiet } from "./page-scripts";
@@ -37,7 +38,20 @@ function refId(ref: string): number {
  * Cross-origin frames are not read.
  */
 export class DomBrowser implements TaskBrowser {
+    /** The URL of the last snapshot, to catch navigations that happen after it. */
+    private snapshotUrl = "";
+
     constructor(public readonly tabId: number) {}
+
+    /** Refuses refs from a snapshot of a page that is being left (see CdpBrowser). */
+    private async ensureSnapshotCurrent() {
+        const tab = await chrome.tabs.get(this.tabId);
+        if (tab.status !== "loading" && (!this.snapshotUrl || tab.url === this.snapshotUrl)) return;
+        const deadline = Date.now() + LOAD_TIMEOUT_MS;
+        while (Date.now() < deadline && (await chrome.tabs.get(this.tabId)).status === "loading") await sleep(50);
+        await sleep(SETTLE_MS);
+        throw new Error(STALE_PAGE_MESSAGE);
+    }
 
     private async exec<Args extends unknown[], Result>(func: (...args: Args) => Result, args: Args, world: "ISOLATED" | "MAIN" = "ISOLATED"): Promise<Awaited<Result>> {
         let results: Array<{ result?: unknown }>;
@@ -88,11 +102,13 @@ export class DomBrowser implements TaskBrowser {
 
     async snapshot(): Promise<string> {
         const page = await this.exec(snapshotPage, [MAX_NODES]);
+        this.snapshotUrl = page.url;
         return axTreeToSnapshot(page.nodes, page, { refPrefix: DOM_REF_PREFIX });
     }
 
     async click(ref: string): Promise<string> {
         const id = refId(ref);
+        await this.ensureSnapshotCurrent();
         await this.withSettle(async () => {
             const result = await this.exec(clickElement, [id]);
             if (!result.ok) throw new Error(result.error);
@@ -102,6 +118,7 @@ export class DomBrowser implements TaskBrowser {
 
     async type(ref: string, _element: string, text: string, submit: boolean): Promise<string> {
         const id = refId(ref);
+        await this.ensureSnapshotCurrent();
         await this.withSettle(async () => {
             const result = await this.exec(typeIntoElement, [id, text]);
             if (!result.ok) throw new Error(result.error);

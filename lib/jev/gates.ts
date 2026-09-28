@@ -138,7 +138,7 @@ export interface AnswerEvidence {
 
 const EVIDENCE_PAGES = 4;
 const LAST_PAGE_CHARS = 10_000;
-const EARLIER_PAGE_CHARS = 2_500;
+const EARLIER_PAGE_CHARS = 3_000;
 
 /**
  * Checks a written answer against the pages the agent saw (not just the last

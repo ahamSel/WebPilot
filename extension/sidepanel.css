@@ -265,6 +265,7 @@ button { font: inherit; color: inherit; }
 .confirm h3 { margin: 4px 0 4px; font-size: 13px; }
 .confirm p { margin: 0 0 10px; color: var(--wp-text-secondary); overflow-wrap: anywhere; }
 .confirm .action { color: var(--wp-text); font-family: var(--wp-font-mono); font-size: 12px; }
+.confirm .hint { margin: 8px 0 0; font-size: 11.5px; color: var(--wp-text-faint); }
 .row { display: flex; gap: 8px; }
 
 .btn {

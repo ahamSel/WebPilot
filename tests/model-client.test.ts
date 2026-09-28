@@ -182,6 +182,75 @@ test("tool chat compacts older tool results but keeps the latest ones whole", as
     ]);
 });
 
+test("streamed tool turns report text as written and rebuild tool calls and reasoning for the next turn", async () => {
+    const sse = (deltas: Array<Record<string, unknown>>) => deltas.map((delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join("") + "data: [DONE]\n\n";
+    const bodies: Array<Record<string, unknown>> = [];
+    const replies = [
+        // Turn 1: a stray remark, then a tool call split across chunks.
+        sse([
+            { reasoning_details: [{ type: "reasoning.text", text: "Need the ", index: 0 }] },
+            { reasoning_details: [{ type: "reasoning.text", text: "page first.", index: 0 }] },
+            { content: "Let me look." },
+            { tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "observe", arguments: "" } }] },
+            { tool_calls: [{ index: 0, function: { arguments: "{\"full\":" } }] },
+            { tool_calls: [{ index: 0, function: { arguments: "true}" } }] },
+        ]),
+        // Turn 2: the answer, in pieces.
+        sse([{ content: "The cheapest " }, { content: "tent is $89.99." }]),
+    ];
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body || "{}")));
+        return new Response(replies.shift(), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const shown: string[] = [];
+    const chat = createModelClient(openRouterConfig()).createToolChat({
+        model: "google/gemini-3.8-flash",
+        systemInstruction: "system",
+        tools: getBrowserToolDeclarations(),
+        onText: (text) => shown.push(text),
+        onTextReset: () => shown.push("<reset>"),
+    });
+    const first = await chat.sendMessage("cheapest tent?");
+    assert.deepEqual(first.functionCalls, [{ id: "call_1", name: "observe", args: { full: true } }]);
+    assert.deepEqual(shown, ["Let me look.", "<reset>"], "text before a tool call is withdrawn");
+
+    const second = await chat.sendMessage([{ functionResponse: { name: "observe", response: { ok: true } } }]);
+    assert.equal(second.text, "The cheapest tent is $89.99.");
+    assert.deepEqual(shown.slice(2), ["The cheapest ", "tent is $89.99."]);
+
+    assert.equal(bodies[0].stream, true);
+    const replayed = (bodies[1].messages as Array<Record<string, unknown>>).find((message) => message.role === "assistant");
+    assert.deepEqual(replayed?.reasoning_details, [{ type: "reasoning.text", text: "Need the page first.", index: 0 }]);
+    assert.deepEqual(replayed?.tool_calls, [{ id: "call_1", type: "function", function: { name: "observe", arguments: "{\"full\":true}" } }]);
+});
+
+test("a tool turn that fails mid-stream is withdrawn and retried once", async () => {
+    const sse = (events: Array<Record<string, unknown>>) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n";
+    const replies = [
+        // The provider drops the request partway through the answer.
+        sse([{ choices: [{ delta: { content: "Here are three" } }] }, { error: { message: "The operation was aborted" } }]),
+        sse([{ choices: [{ delta: { content: "Here are three rentals." } }] }]),
+    ];
+    let calls = 0;
+    globalThis.fetch = (async () => {
+        calls++;
+        return new Response(replies.shift(), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    }) as typeof fetch;
+    const shown: string[] = [];
+    const chat = createModelClient(openRouterConfig()).createToolChat({
+        model: "google/gemini-3.8-flash",
+        systemInstruction: "system",
+        tools: getBrowserToolDeclarations(),
+        onText: (text) => shown.push(text),
+        onTextReset: () => shown.push("<reset>"),
+    });
+    const reply = await chat.sendMessage("find rentals");
+    assert.equal(calls, 2);
+    assert.equal(reply.text, "Here are three rentals.");
+    assert.deepEqual(shown, ["Here are three", "<reset>", "Here are three rentals."]);
+});
+
 test("Ollama requests omit OpenRouter-only fields", async () => {
     const requests = mockFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
     const client = createModelClient(resolveRuntimeModelConfig({ provider: "ollama", navModel: "qwen3:8b" }));
