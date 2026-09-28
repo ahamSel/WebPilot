@@ -29,6 +29,7 @@ import {
 } from "./model-client";
 import type { BrowserChannel, BrowserRuntimeSettings } from "./browser-runtime";
 import { getBrowserToolDeclarations } from "./tool-schema";
+import { extractDomainFromGoal, extractUrlFromGoal } from "./goal-urls";
 
 // ============================================================================
 // TYPES
@@ -81,21 +82,6 @@ function nowIso() {
 function shortErr(e: any): string {
     const msg = e?.message || String(e);
     return msg.length > 600 ? msg.slice(0, 600) + "…" : msg;
-}
-
-function extractDomainFromGoal(goal: string): string {
-    const text = goal.trim();
-    if (!text) return "";
-    const urlLike = text.match(/https?:\/\/([a-z0-9.-]+\.[a-z]{2,})(?:[/:?#]|$)/i);
-    if (urlLike?.[1]) return urlLike[1].toLowerCase();
-    const hostLike = text.match(/\b([a-z0-9.-]+\.[a-z]{2,})\b/i);
-    if (hostLike?.[1]) return hostLike[1].toLowerCase();
-    return "";
-}
-
-function extractUrlFromGoal(goal: string): string {
-    const match = String(goal || "").match(/https?:\/\/[^\s"'`<>]+/i);
-    return match?.[0] || "";
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

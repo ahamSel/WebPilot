@@ -15,7 +15,7 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import tsx --test tests/tool-schema.test.ts",
+    "test": "node --import tsx --test \"tests/*.test.ts\"",
     "health": "node scripts/health-check.js",
     "mcp:cli": "node scripts/mcp-cli.js",
     "agent:cli": "node scripts/agent-runner.js",
