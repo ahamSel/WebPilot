@@ -1286,7 +1286,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 if (jevSetup && "jev" in jevSetup && latestObservationSnapshot) {
                     const observed: NormalizedSnapshot = latestObservationSnapshot;
                     try {
-                        const check = await jevCheckAnswer(jevSetup.jev, reviewTask, result, observed.url, observed.text || "");
+                        const check = await jevCheckAnswer(jevSetup.jev, reviewTask, result, [{ url: observed.url, title: observed.title, text: observed.text || "" }]);
                         log("info", "jev_decision", {
                             gate: "answer_check",
                             supported: Number(check.supportedProbability.toFixed(3)),
@@ -1295,13 +1295,13 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         if (check.accept) {
                             review = {
                                 accept: true,
-                                reason: `Jev answer check: answer_supported=${check.supportedProbability.toFixed(2)}`,
+                                reason: `Jev answer check: claims_supported=${check.scores.claims_supported.toFixed(2)} answers_task=${check.scores.answers_task.toFixed(2)}`,
                                 retryInstruction: "",
                             };
                         } else if (fromFastMode && check.supportedProbability < FAST_ANSWER_ESCALATE_BELOW) {
                             review = {
                                 accept: false,
-                                reason: `Jev answer check: answer_supported=${check.supportedProbability.toFixed(2)}`,
+                                reason: `Jev answer check: claims_supported=${check.scores.claims_supported.toFixed(2)} answers_task=${check.scores.answers_task.toFixed(2)}`,
                                 retryInstruction: "Fast mode's answer is not supported by the page. Continue the task from the current page and check the page before finishing.",
                             };
                         }

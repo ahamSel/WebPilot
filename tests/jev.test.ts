@@ -320,8 +320,8 @@ test("Jev gates only shortcut the LLM when confident", async () => {
     mockJev([
         () => ({ needs_browser: noul(0.95), parallel_sites: noul(0.05), changes_something: noul(0.9), multiple_parts: noul(0.8) }),
         () => ({ needs_browser: noul(0.5), parallel_sites: noul(0.6), changes_something: noul(0.1), multiple_parts: noul(0.1) }),
-        () => ({ answer_supported: noul(0.9) }),
-        () => ({ answer_supported: noul(0.05) }),
+        () => ({ claims_supported: noul(0.95), answers_task: noul(0.9) }),
+        () => ({ claims_supported: noul(0.95), answers_task: noul(0.05) }),
     ]);
     const confident = await jevPreflight(JEV, "Go to example.com", "");
     assert.equal(confident.browse, true);
@@ -334,8 +334,9 @@ test("Jev gates only shortcut the LLM when confident", async () => {
     assert.equal(unsure.parallel, undefined);
     assert.equal(unsure.changesSomething, false);
 
-    assert.equal((await jevCheckAnswer(JEV, "task", "answer", "https://x", "text")).accept, true);
-    assert.equal((await jevCheckAnswer(JEV, "task", "answer", "https://x", "text")).accept, undefined, "Jev never rejects on its own");
+    const evidence = [{ url: "https://x", text: "text" }];
+    assert.equal((await jevCheckAnswer(JEV, "task", "answer", evidence)).accept, true);
+    assert.equal((await jevCheckAnswer(JEV, "task", "answer", evidence)).accept, undefined, "Jev never rejects on its own");
 });
 
 test("links without an accessible name are named from their child text", () => {

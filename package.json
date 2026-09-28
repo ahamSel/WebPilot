@@ -25,6 +25,7 @@
     "extension:build:dev": "node scripts/build-extension.mjs --dev",
     "extension:dev": "node scripts/build-extension.mjs --watch",
     "extension:smoke": "tsx scripts/extension-smoke.ts",
+    "eval:answer-check": "tsx scripts/eval-answer-check.ts",
     "browser:smoke": "node scripts/browser-smoke.mjs",
     "browsers:install": "node scripts/prepare-playwright-browsers.mjs",
     "desktop:dev": "node scripts/electron-dev.mjs",
