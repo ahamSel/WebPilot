@@ -155,6 +155,33 @@ test("tool chat sends OpenRouter headers and preserves reasoning details across 
     assert.equal(toolResult?.content, "{\"ok\":true}");
 });
 
+test("tool chat compacts older tool results but keeps the latest ones whole", async () => {
+    const observe = (id: string) => ({ role: "assistant", content: null, tool_calls: [{ id, type: "function", function: { name: "observe", arguments: "{}" } }] });
+    const requests = mockFetch([
+        { body: { choices: [{ message: observe("c1") }] } },
+        { body: { choices: [{ message: observe("c2") }] } },
+        { body: { choices: [{ message: observe("c3") }] } },
+        { body: { choices: [{ message: { role: "assistant", content: "done" } }] } },
+    ]);
+    const chat = createModelClient(openRouterConfig()).createToolChat({
+        model: "google/gemini-3.8-flash",
+        systemInstruction: "system",
+        tools: getBrowserToolDeclarations(),
+        compactToolResponse: (response) => ({ ...response, page: "(compacted)" }),
+    });
+    await chat.sendMessage("go");
+    for (const page of ["page one", "page two", "page three"]) {
+        await chat.sendMessage([{ functionResponse: { name: "observe", response: { ok: true, page } } }]);
+    }
+
+    const tools = requests[3].body.messages.filter((message) => message.role === "tool").map((message) => message.content);
+    assert.deepEqual(tools, [
+        "{\"ok\":true,\"page\":\"(compacted)\"}",
+        "{\"ok\":true,\"page\":\"page two\"}",
+        "{\"ok\":true,\"page\":\"page three\"}",
+    ]);
+});
+
 test("Ollama requests omit OpenRouter-only fields", async () => {
     const requests = mockFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
     const client = createModelClient(resolveRuntimeModelConfig({ provider: "ollama", navModel: "qwen3:8b" }));

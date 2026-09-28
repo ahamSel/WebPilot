@@ -47,6 +47,7 @@ const ACTION_LABELS: Record<string, string> = {
     scroll_up: "scroll up",
     back: "go back",
     navigate: "open",
+    delegate: "hand to Jev",
     scroll: "scroll",
     wait: "wait",
 };

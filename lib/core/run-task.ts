@@ -12,7 +12,7 @@
 
 import { createModelClient, resolveJevConfig, type RuntimeModelConfig, type ToolResponsePart } from "../model-client";
 import { extractExplicitUrls } from "../goal-urls";
-import { runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult } from "../jev/fast-mode";
+import { runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult, type FastModeStep } from "../jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../jev/gates";
 import { describeElement, parsePage, selectCandidates, type PageModel } from "../jev/page";
 import { CREDENTIALS_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
@@ -115,6 +115,23 @@ const FAST_ANSWER_ACCEPT = 0.8;
  * article section, so it reads instead of scrolling (fast mode's Jev state stays small).
  */
 const PLANNER_TEXT_CHARS = 8000;
+/** A delegated sub-goal is short legwork: a search, opening an item, a few pages. */
+const DELEGATE_MAX_STEPS = 10;
+const DELEGATE_TIME_BUDGET_MS = 40_000;
+
+/** The planner's tool for handing legwork to Jev. */
+const DELEGATE_TOOL = {
+    name: "delegate",
+    description: "Hand a concrete browsing sub-goal to Jev, a fast navigation model (about 0.3s per step, versus several seconds for you): searching a site, opening a result, an email or an item, moving through lists, menus and pages. Jev works from the current page and returns what it did and the page it ended on (elements and text), so you don't need observe() afterwards.",
+    parameters: {
+        type: "object",
+        properties: {
+            goal: { type: "string", description: "One specific sub-goal, naming what to search for or open, e.g. 'search the inbox for Horizon and open the most recent email about an appointment'." },
+        },
+        required: ["goal"],
+    },
+};
+
 /** After this long, the planner is asked to wrap up with what it has. */
 const PLANNER_WRAP_UP_MS = 60_000;
 const FAST_ANSWER_ESCALATE_BELOW = 0.3;
@@ -150,6 +167,17 @@ function formatHistory(history: RunTaskOptions["history"]): string {
         }
         return lines.join("\n");
     }).join("\n\n");
+}
+
+/**
+ * An earlier page view in the planner's history: its text stays (facts found
+ * there may be needed for the answer) but its elements go, since their refs no
+ * longer work once the page has changed.
+ */
+export function compactPlannerResult(response: Record<string, unknown>): Record<string, unknown> {
+    if (typeof response.page !== "string") return response;
+    const page = response.page.replace(/\nElements[^\n]*:\n[\s\S]*?\n\nText:\n/, "\n(Earlier page: elements omitted.)\nText:\n");
+    return { ...response, page };
 }
 
 /** Compact page view for the LLM planner: numbered actionable elements plus text. */
@@ -245,6 +273,7 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
     // With a web page open, the same call decides whether the request is about it.
     let browse: boolean | undefined;
     let changesSomething = false;
+    let multiPart = false;
     let startsOnCurrentPage = false;
     let answerFromCurrentPage = false;
     if (jev && !conversation) {
@@ -254,6 +283,7 @@ async function runTaskInner(options: RunTaskOptions, stats: TaskStats, memory: T
             stats.jevCalls++;
             browse = preflight.browse;
             changesSomething = preflight.changesSomething;
+            multiPart = preflight.multiPart;
             startsOnCurrentPage = preflight.startsOnCurrentPage;
             answerFromCurrentPage = preflight.answerFromCurrentPage && !preflight.changesSomething;
         } catch {
@@ -276,17 +306,20 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
 
 "changes_something" is true when the task buys, orders, books, sends, posts, deletes, subscribes or submits something (not just finding or reading).
 
-{"mode": "chat|browse", "reply": "full reply when chat", "browser_goal": "task when browse", "changes_something": false}`,
+"multi_part" is true when the task asks for several separate things likely found in different places (different emails, pages or searches).
+
+{"mode": "chat|browse", "reply": "full reply when chat", "browser_goal": "task when browse", "changes_something": false, "multi_part": false}`,
             thinkingBudget: 512,
         });
         stats.llmCalls++;
         const route = extractJson(routeText);
-        trace("route", route ? { mode: route.mode, browser_goal: route.browser_goal, changes_something: route.changes_something } : { unparsed: routeText.slice(0, 300) });
+        trace("route", route ? { mode: route.mode, browser_goal: route.browser_goal, changes_something: route.changes_something, multi_part: route.multi_part } : { unparsed: routeText.slice(0, 300) });
         if (route?.mode === "chat" && typeof route.reply === "string" && route.reply.trim()) {
             return finish(route.reply.trim(), "chat");
         }
         if (typeof route?.browser_goal === "string" && route.browser_goal.trim()) browserGoal = route.browser_goal.trim();
         if (route?.changes_something === true) changesSomething = true;
+        if (route?.multi_part === true) multiPart = true;
     }
     await checkCancelled();
 
@@ -359,38 +392,49 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
     // weak at multi-step flows like add to cart -> checkout.
     let handoff = "";
     let fast: FastModeResult | null = null;
+    // Fast mode wiring shared by the fast passes and by planner delegations.
+    const fastModeHooks = (label: string) => ({
+        jev: jev!,
+        browser,
+        writer: llm,
+        writerModel: config.navModel,
+        writerTimeoutMs: config.timeoutMs,
+        log: (_level: string, action: string, data?: unknown) => {
+            if (action === "jev_decision") stats.jevCalls++;
+            if (action === "fast_mode_text_written" || action === "fast_mode_consult") stats.llmCalls++;
+            trace(action, { run: label, ...(data && typeof data === "object" ? data as Record<string, unknown> : {}) });
+        },
+        checkStop: checkCancelled,
+        confirm: confirmOrCancel,
+        onStep: async (step: FastModeStep) => {
+            stats.steps++;
+            emit({
+                type: "step",
+                source: step.source,
+                action: step.operation,
+                detail: step.target
+                    ? step.target.description + (step.text ? ` ← "${step.text}"` : "")
+                    : step.operation === "navigate" ? step.page.url : undefined,
+                url: step.page.url,
+            });
+        },
+    });
     if (jev && changesSomething) {
         emit({ type: "status", message: "Careful mode: this request changes something" });
+    } else if (jev && multiPart) {
+        // Fast mode finishes after the first part; the planner splits the request
+        // and hands each part to Jev.
+        emit({ type: "status", message: "Several parts: planning, with Jev doing the legwork" });
+        handoff = "This request asks for several separate things. Use delegate for each part (one concrete sub-goal at a time), read what Jev finds, then finish with every part answered.";
     }
     // A second pass runs when the first stops on a page that doesn't support its answer
     // (e.g. a search results list): finishing there is ruled out, so Jev opens the item.
-    for (let pass = 1; jev && !changesSomething && pass <= 2; pass++) {
+    for (let pass = 1; jev && !changesSomething && !multiPart && pass <= 2; pass++) {
         emit({ type: "status", message: pass === 1 ? "Working fast" : "Looking closer" });
         fast = await runFastMode({
+            ...fastModeHooks(`pass ${pass}`),
             task: browserGoal,
             noDoneOn: pass === 2 && fast ? fast.page.url : undefined,
-            jev,
-            browser,
-            writer: llm,
-            writerModel: config.navModel,
-            writerTimeoutMs: config.timeoutMs,
-            log: (_level, action, data) => {
-                if (action === "jev_decision") stats.jevCalls++;
-                if (action === "fast_mode_text_written") stats.llmCalls++;
-                trace(action, { pass, ...(data && typeof data === "object" ? data as Record<string, unknown> : {}) });
-            },
-            checkStop: checkCancelled,
-            confirm: confirmOrCancel,
-            onStep: async (step) => {
-                stats.steps++;
-                emit({
-                    type: "step",
-                    source: "jev",
-                    action: step.operation,
-                    detail: step.target ? step.target.description + (step.text ? ` ← "${step.text}"` : "") : undefined,
-                    url: step.page.url,
-                });
-            },
         });
 
         if (fast.outcome === "done") {
@@ -421,20 +465,25 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
 
     // 4. LLM planner on the same page.
     emit({ type: "status", message: "Thinking it through" });
-    const tools = getBrowserToolDeclarations({ includeTabTools: false });
+    const tools = [...getBrowserToolDeclarations({ includeTabTools: false }), ...(jev ? [DELEGATE_TOOL] : [])];
     const chat = llm.createToolChat({
         model: config.navModel,
         tools,
+        compactToolResponse: compactPlannerResult,
         systemInstruction: `You are WebPilot, a browser agent working in the user's own browser tab. Task: ${browserGoal}
 
-Tools: observe() returns the page's actionable elements as [ref] descriptions plus page text. click({ref, element}) and type({ref, text, submit?}) act on refs from the latest observe(). navigate({url}), scroll({direction}), wait({seconds}). finish({result}) ends the task with the answer for the user.
+Tools: observe() returns the page's actionable elements as [ref] descriptions plus page text. click({ref, element}) and type({ref, text, submit?}) act on refs from the latest observe(). navigate({url}), scroll({direction}), wait({seconds}). finish({result}) ends the task with the answer for the user.${jev ? `
+delegate({goal}) hands a sub-goal to Jev, a fast navigation model. You think and decide; Jev does the legwork.` : ""}
 
-Rules:
+Rules:${jev ? `
+- Prefer delegate for legwork: opening results, emails or items, going through lists, menus and pages. Give one specific sub-goal at a time, then read the page it returns. For several separate questions, handle each in turn.
+- When a site has a search URL you know (Gmail: https://mail.google.com/mail/u/0/#search/<query>; most shops and sites: ?q=<query>), navigate() to it instead of working through search forms.
+- Do precise steps yourself: forms with specific values, checkout, and anything Jev reported it couldn't do.` : ""}
 - Call observe() before using refs, and again after actions that change the page.
 - ${UNTRUSTED_CONTENT_RULE}
 - Only take irreversible actions (buy, pay, send, delete, publish...) when the task clearly asks for them; the user is asked to confirm each one.
 - ${CREDENTIALS_RULE} If the browser already filled them in, you may click the sign-in button; the user is asked to confirm.
-- Answer from what the page shows. Be concise and specific; include names, prices and links when relevant.
+- Answer only with what pages in this task showed. Never fill gaps with general knowledge or typical patterns; say plainly what you couldn't find. Be concise and specific; include names, dates, prices and links when relevant.
 - Work fast. If a few searches or places turn up nothing, stop and say so rather than trying every variation.
 - If you can't fully answer, finish with what you found, what you couldn't find, and where you looked.`,
     });
@@ -478,6 +527,25 @@ Rules:
                         await browser.type(String(args.ref || ""), String(args.element || ""), String(args.text || ""), args.submit === true);
                         result = { ok: true };
                     }
+                } else if (call.name === "delegate" && jev) {
+                    const subGoal = String(args.goal || "").trim();
+                    if (!subGoal) throw new Error("delegate needs a goal.");
+                    emit({ type: "step", source: "llm", action: "delegate", detail: subGoal, url: lastPage.url });
+                    const delegated = await runFastMode({
+                        ...fastModeHooks(`delegate ${turn + 1}`),
+                        task: subGoal,
+                        context: `This is one step of the user's task: ${browserGoal}`,
+                        maxSteps: DELEGATE_MAX_STEPS,
+                        timeBudgetMs: DELEGATE_TIME_BUDGET_MS,
+                        maxConsults: 1,
+                    });
+                    lastPage = parsePage(await browser.snapshot(), PLANNER_TEXT_CHARS);
+                    result = {
+                        ok: delegated.outcome === "done",
+                        outcome: delegated.outcome === "done" ? "Jev finished the sub-goal." : `Jev stopped: ${delegated.reason}`,
+                        steps: delegated.history.map((entry) => `${entry.action} -> ${entry.outcome}`),
+                        page: plannerObservation(lastPage, browserGoal),
+                    };
                 } else if (call.name === "navigate") {
                     await browser.navigate(String(args.url || ""));
                     result = { ok: true, ...(await browser.pageInfo()) };
@@ -494,7 +562,7 @@ Rules:
                 if (error instanceof TaskCancelledError || error instanceof ActionDeclinedError) throw error;
                 result = { ok: false, error: error instanceof Error ? error.message.slice(0, 300) : String(error) };
             }
-            if (call.name !== "observe") {
+            if (call.name !== "observe" && call.name !== "delegate") {
                 stats.steps++;
                 emit({ type: "step", source: "llm", action: call.name, detail: String(args.element || args.url || args.text || ""), url: lastPage.url });
             }

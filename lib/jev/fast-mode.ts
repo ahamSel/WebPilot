@@ -1,18 +1,23 @@
 /**
- * Fast mode: Jev picks each browser action, an LLM only writes text.
+ * Fast mode: Jev picks each browser action; the LLM writes text and advises.
  *
  * Every step makes one Jev call that answers several typed questions at once
  * (operation, click target, type target, submit, goal done, stuck). The LLM
- * is used only to write text for inputs and to phrase the final answer. When
- * Jev is stuck, blocked, repeating itself, out of budget, or about to take an
- * irreversible action, the loop hands control back to the LLM planner.
+ * writes text for inputs and phrases the final answer. When Jev is blocked,
+ * stuck, very unsure or making no progress, it first consults the LLM for that
+ * one step (~2s) and keeps driving; only when the LLM says the task needs
+ * careful step-by-step work, or the consults run out, does the loop hand
+ * control to the LLM planner. The planner can in turn delegate sub-goals back
+ * to fast mode (`context` then carries the overall task).
  */
 
 import type { ModelClient } from "../model-client";
-import { TASK_ONLY_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
+import { CREDENTIALS_RULE, TASK_ONLY_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
 import {
+    JEV_TOKEN_BUDGET,
     choiceAnswer,
     decide,
+    estimateJevTokens,
     noulAnswer,
     rankedChoices,
     type JevClientConfig,
@@ -34,10 +39,14 @@ export interface FastModeBrowser {
     type(ref: string, element: string, text: string, submit: boolean): Promise<string>;
     pressKey(key: string): Promise<string>;
     back(): Promise<string>;
+    /** Lets the LLM advisor jump to a URL (e.g. a site's search results). */
+    navigate?(url: string): Promise<string>;
 }
 
 export interface FastModeStep {
     step: number;
+    /** Who chose the action: Jev, or the LLM when Jev consulted it. */
+    source: "jev" | "llm";
     operation: Operation;
     target?: { ref: string; description: string };
     text?: string;
@@ -47,6 +56,7 @@ export interface FastModeStep {
     outcome: string;
     preUrl: string;
     page: PageModel;
+    /** Jev's answers for the step; empty when Jev failed and the LLM chose. */
     decision: JevDecision;
     durationMs: number;
 }
@@ -73,6 +83,12 @@ export interface FastModeOptions {
      * this page was found unsupported, so Jev has to open the item that answers it.
      */
     noDoneOn?: string;
+    /** For a sub-goal delegated by the planner: the overall task and what is known so far. */
+    context?: string;
+    /** How many times Jev may ask the LLM for a single step before handing off (default 2). */
+    maxConsults?: number;
+    /** Estimated-token ceiling for each Jev request (default JEV_TOKEN_BUDGET). */
+    jevTokenBudget?: number;
 }
 
 export interface FastModeResult {
@@ -90,7 +106,7 @@ interface HistoryEntry {
     outcome: string;
 }
 
-type Operation = "click" | "type" | "scroll_down" | "scroll_up" | "back" | "done" | "blocked";
+type Operation = "click" | "type" | "scroll_down" | "scroll_up" | "back" | "navigate" | "done" | "blocked";
 
 /** Jev choices allow 255 options; element actions plus page actions share them. */
 const MAX_ACTION_OPTIONS = 250;
@@ -102,6 +118,10 @@ const DONE_THRESHOLD = 0.85;
  */
 const LIKELY_DONE_THRESHOLD = 0.45;
 const UNSURE_ACTION_PROBABILITY = 0.35;
+/** Below this Jev is guessing; the LLM picks the step instead. */
+const GUESSING_PROBABILITY = 0.1;
+const DEFAULT_MAX_CONSULTS = 2;
+const CONSULT_ELEMENT_LIMIT = 80;
 const STUCK_THRESHOLD = 0.85;
 const DEFAULT_MAX_STEPS = 20;
 const DEFAULT_TIME_BUDGET_MS = 120_000;
@@ -152,7 +172,7 @@ async function writeFieldText(
         model: options.writerModel,
         systemInstruction: `You fill in a single browser form field for an automation agent. Reply with only the exact text to type, on one line, with no quotes or explanation. Never make up usernames, emails, passwords, codes, phone numbers, addresses or other personal details the task doesn't give: if the task doesn't say what goes in this field, reply NONE. ${UNTRUSTED_CONTENT_RULE}`,
         prompt: `Task: ${options.task}
-
+${options.context ? `Context: ${options.context}\n` : ""}
 Current page: ${page.title} (${page.url})
 Field: ${field}
 Steps so far:
@@ -229,6 +249,81 @@ function chooseAction(decision: JevDecision, elements: PageElement[], avoid: Set
     return { operation: "blocked", probability: 0 };
 }
 
+interface Advice {
+    operation: Operation;
+    target?: PageElement;
+    text?: string;
+    submit?: boolean;
+    url?: string;
+    reason: string;
+    /** The LLM thinks this needs the step-by-step planner. */
+    handoff?: boolean;
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | null {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    try {
+        const parsed = JSON.parse(match[0]);
+        return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Jev is blocked, stuck or guessing: the LLM picks this one step from the same
+ * options, then Jev carries on. Costs one LLM call instead of a full handoff.
+ */
+async function consultAdvisor(
+    options: FastModeOptions,
+    page: PageModel,
+    candidates: PageElement[],
+    history: HistoryEntry[],
+    trouble: string,
+    mayFinish: boolean
+): Promise<Advice> {
+    const started = Date.now();
+    const { selected } = selectCandidates(candidates, options.task, CONSULT_ELEMENT_LIMIT);
+    const canNavigate = typeof options.browser.navigate === "function";
+    const actions = ["click", "type", "scroll_down", "scroll_up", "back", ...(canNavigate ? ["navigate"] : []), ...(mayFinish ? ["done"] : []), "handoff"];
+    const raw = await options.writer.generateText({
+        model: options.writerModel,
+        systemInstruction: `You advise Jev, a fast browser-navigation model, on one step when it is blocked, stuck or unsure. Pick the single next action that best moves the task forward. ${UNTRUSTED_CONTENT_RULE} ${CREDENTIALS_RULE} Return JSON only.`,
+        prompt: `Task: ${options.task}
+${options.context ? `Context: ${options.context}\n` : ""}Why you are asked: ${trouble}
+
+Current page: ${page.title} (${page.url})
+Steps so far:
+${history.slice(-HISTORY_LIMIT).map((entry) => `- ${entry.action} -> ${entry.outcome}`).join("\n") || "- none"}
+
+Elements:
+${selected.map((element) => `[${element.ref}] ${describeElement(element, page.url)}`).join("\n") || "(none)"}
+
+Page text:
+${page.text.slice(0, 3000)}
+
+Reply with {"action": "${actions.join("|")}", "ref": "element ref for click or type", "text": "text to type", "submit": true, ${canNavigate ? `"url": "absolute URL for navigate", ` : ""}"reason": "a few words"}.
+${canNavigate ? "Use navigate only for a URL you are sure of, such as the site's own search URL with the query. " : ""}${mayFinish ? "Use done when the page already shows what the task needs. " : ""}Use handoff when the task needs several careful steps (forms, checkout, sign-in) or you can't tell what to do.`,
+        thinkingBudget: 512,
+    });
+    const advice = parseJsonObject(raw) || {};
+    const action = String(advice.action || "handoff");
+    const reason = String(advice.reason || "").slice(0, 200);
+    options.log("info", "fast_mode_consult", { trouble, action, ref: advice.ref, url: advice.url, reason, durationMs: Date.now() - started });
+    if (action === "click" || action === "type") {
+        const target = selected.find((element) => element.ref === String(advice.ref || "") && element.kind === action);
+        if (!target) return { operation: "blocked", reason: `the LLM picked an element that isn't available (${String(advice.ref || "none")})`, handoff: true };
+        return { operation: action, target, text: typeof advice.text === "string" && advice.text.trim() ? advice.text.trim() : undefined, submit: advice.submit === true, reason };
+    }
+    if (action === "navigate" && canNavigate && /^https?:\/\//i.test(String(advice.url || ""))) {
+        return { operation: "navigate", url: String(advice.url), reason };
+    }
+    if (action === "scroll_down" || action === "scroll_up" || action === "back") return { operation: action, reason };
+    if (action === "done" && mayFinish) return { operation: "done", reason };
+    return { operation: "blocked", reason: reason || "the LLM advised handing off", handoff: true };
+}
+
 export async function runFastMode(options: FastModeOptions): Promise<FastModeResult> {
     const maxSteps = options.maxSteps ?? DEFAULT_MAX_STEPS;
     const deadline = Date.now() + (options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
@@ -241,6 +336,9 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
     const usedActions = new Map<string, Set<string>>();
     let noProgress = 0;
     let navigated = false;
+    let consultsLeft = options.maxConsults ?? DEFAULT_MAX_CONSULTS;
+    // Set when the last steps made no progress: the next step asks the LLM.
+    let pendingTrouble: string | null = null;
 
     const remember = (page: PageModel) => {
         if (pages[pages.length - 1]?.url !== page.url) pages.push({ url: page.url, title: page.title, text: page.text });
@@ -262,38 +360,67 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
         if (navigated) pageActions.push("back");
         const mayFinish = page.url !== options.noDoneOn;
         pageActions.push(...(mayFinish ? ["done", "blocked"] as const : ["blocked"] as const));
-        const typePool = selectCandidates(
-            // Password, code and card fields are the user's to fill in.
-            page.elements.filter((element) => element.kind === "type" && !isSecretField(element) && !usedHere.has(actionKey("type", element, page.url))),
-            options.task,
-            Math.min(40, MAX_ACTION_OPTIONS - pageActions.length)
-        );
-        const clickPool = selectCandidates(
-            page.elements.filter((element) => element.kind === "click" && !usedHere.has(actionKey("click", element, page.url))),
-            options.task,
-            MAX_ACTION_OPTIONS - pageActions.length - typePool.selected.length
-        );
+        // Password, code and card fields are the user's to fill in.
+        const typeables = page.elements.filter((element) => element.kind === "type" && !isSecretField(element) && !usedHere.has(actionKey("type", element, page.url)));
+        const clickables = page.elements.filter((element) => element.kind === "click" && !usedHere.has(actionKey("click", element, page.url)));
 
-        const state = {
-            task: options.task,
-            current_page: { url: page.url, title: page.title },
-            page_text_excerpt: page.text,
-            // What earlier pages showed (e.g. the price list) so Jev can judge the current one.
-            earlier_pages: pages
-                .filter((visited) => visited.url !== page.url)
-                .slice(-2)
-                .map((visited) => ({ title: visited.title, url: visited.url, text_excerpt: visited.text.slice(0, 600) })),
-            element_list_truncated: clickPool.truncated || typePool.truncated,
-            history: history.slice(-HISTORY_LIMIT),
-        };
+        // Build the request within Jev's context budget: on crowded pages, keep the
+        // options most relevant to the task and shorten the text excerpts.
+        let optionLimit = MAX_ACTION_OPTIONS;
+        let textLimit = page.text.length;
+        let earlierPages = 2;
+        let typePool = selectCandidates(typeables, options.task, 0);
+        let clickPool = typePool;
+        let state: Record<string, unknown> = {};
+        let questions: Record<string, JevQuestion> = {};
+        let estimatedTokens = 0;
+        for (let fit = 0; ; fit++) {
+            typePool = selectCandidates(typeables, options.task, Math.min(40, optionLimit - pageActions.length));
+            clickPool = selectCandidates(clickables, options.task, optionLimit - pageActions.length - typePool.selected.length);
+            state = {
+                // A long pasted request or context must not crowd out the page.
+                task: options.task.slice(0, 4000),
+                ...(options.context ? { context: options.context.slice(0, 2000) } : {}),
+                current_page: { url: page.url, title: page.title },
+                page_text_excerpt: page.text.slice(0, textLimit),
+                // What earlier pages showed (e.g. the price list) so Jev can judge the current one.
+                earlier_pages: pages
+                    .filter((visited) => visited.url !== page.url)
+                    .slice(-earlierPages)
+                    .map((visited) => ({ title: visited.title, url: visited.url, text_excerpt: visited.text.slice(0, 600) })),
+                element_list_truncated: clickPool.truncated || typePool.truncated,
+                history: history.slice(-HISTORY_LIMIT).map((entry) => ({ ...entry, action: entry.action.slice(0, 300) })),
+            };
+            questions = buildQuestions(clickPool.selected, typePool.selected, pageActions, page.url);
+            estimatedTokens = estimateJevTokens(state, questions);
+            if (estimatedTokens <= (options.jevTokenBudget ?? JEV_TOKEN_BUDGET) || fit >= 4) break;
+            optionLimit = Math.max(40, Math.floor(optionLimit * 0.6));
+            textLimit = Math.min(textLimit, 800);
+            earlierPages = 1;
+        }
+        if (optionLimit < MAX_ACTION_OPTIONS) {
+            options.log("info", "jev_request_trimmed", { estimatedTokens, options: clickPool.selected.length + typePool.selected.length, of: clickables.length + typeables.length });
+        }
 
         const decisionStart = Date.now();
-        const decision = await decide(options.jev, state, buildQuestions(clickPool.selected, typePool.selected, pageActions, page.url));
+        let decision: JevDecision;
+        let jevFailure: string | null = null;
+        try {
+            decision = await decide(options.jev, state, questions);
+        } catch (jevError) {
+            // Stopping aborts the request: surface that as a stop, not a failure.
+            await options.checkStop();
+            const message = jevError instanceof Error ? jevError.message : String(jevError);
+            options.log("warn", "jev_error", { message: message.slice(0, 300), estimatedTokens });
+            // The LLM picks this step instead (below).
+            jevFailure = `Jev could not decide this step (${message.slice(0, 120)}).`;
+            decision = { model: options.jev.model, answers: {}, inputTokens: 0, latencyMs: Date.now() - decisionStart };
+        }
         const chosen = chooseAction(decision, [...clickPool.selected, ...typePool.selected], usedHere);
-        const operation = chosen.operation;
+        let operation = chosen.operation;
         const goalDone = noulAnswer(decision, "goal_done");
         const stuck = noulAnswer(decision, "stuck");
-        options.log("info", "jev_decision", {
+        if (!jevFailure) options.log("info", "jev_decision", {
             step,
             action: chosen.target ? `${operation}_${chosen.target.ref}` : operation,
             element: chosen.target ? describeElement(chosen.target, page.url).slice(0, 80) : undefined,
@@ -318,13 +445,35 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
                 step - 1
             );
         }
-        if (operation === "blocked") return finish("handoff", "Jev reported the task is blocked on this page.", page, step - 1);
-        if (stuck >= STUCK_THRESHOLD && step > 2) return finish("handoff", `Jev reported being stuck (stuck=${stuck.toFixed(2)}).`, page, step - 1);
 
-        const before = page;
-        const target: PageElement | undefined = chosen.target;
+        // Jev in trouble: the LLM picks this step, then Jev carries on.
+        const trouble = jevFailure
+            ? jevFailure
+            : operation === "blocked" ? "Jev reported the task is blocked on this page."
+            : stuck >= STUCK_THRESHOLD && step > 2 ? `Jev reported being stuck (stuck=${stuck.toFixed(2)}).`
+            : pendingTrouble
+            || (chosen.probability < GUESSING_PROBABILITY && goalDone < LIKELY_DONE_THRESHOLD ? `Jev is unsure of the next step (p=${chosen.probability.toFixed(2)}).` : null);
+        pendingTrouble = null;
+        let source: "jev" | "llm" = "jev";
+        let target: PageElement | undefined = chosen.target;
         let text: string | undefined;
         let submit: boolean | undefined;
+        let url: string | undefined;
+        if (trouble) {
+            if (consultsLeft <= 0) return finish("handoff", trouble, page, step - 1);
+            consultsLeft--;
+            const advice = await consultAdvisor(options, page, [...clickPool.selected, ...typePool.selected], history, trouble, mayFinish);
+            if (advice.operation === "done") return finish("done", `The LLM judged the task complete: ${advice.reason}`, page, step - 1);
+            if (advice.handoff) return finish("handoff", `${trouble} The LLM advised handing off: ${advice.reason}`, page, step - 1);
+            source = "llm";
+            operation = advice.operation;
+            target = advice.target;
+            text = advice.text;
+            submit = advice.submit;
+            url = advice.url;
+        }
+
+        const before = page;
         let actionLabel: string = operation;
         let resultText = "";
         let ok = true;
@@ -345,15 +494,20 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
                 resultText = await options.browser.click(target.ref, description);
             } else if (operation === "type" && target) {
                 const description = describeElement(target, page.url);
-                text = await writeFieldText(options, page, description, history);
+                if (!text) {
+                    text = await writeFieldText(options, page, description, history);
+                    submit = noulAnswer(decision, "submit_after_typing") >= 0.5;
+                }
                 if (!text) return finish("handoff", `Could not decide what to type into ${description}.`, page, step - 1);
-                submit = noulAnswer(decision, "submit_after_typing") >= 0.5;
                 actionLabel = `type "${text}" into ${description}${submit ? " and press Enter" : ""}`;
-                resultText = await options.browser.type(target.ref, description, text, submit);
+                resultText = await options.browser.type(target.ref, description, text, submit === true);
             } else if (operation === "scroll_down" || operation === "scroll_up") {
                 resultText = await options.browser.pressKey(operation === "scroll_down" ? "PageDown" : "PageUp");
             } else if (operation === "back") {
                 resultText = await options.browser.back();
+            } else if (operation === "navigate" && url && options.browser.navigate) {
+                actionLabel = `open ${url}`;
+                resultText = await options.browser.navigate(url);
             }
         } catch (actionError) {
             ok = false;
@@ -378,6 +532,7 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
 
         await options.onStep?.({
             step,
+            source,
             operation,
             target: target ? { ref: target.ref, description: describeElement(target, before.url) } : undefined,
             text,
@@ -392,7 +547,9 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
         });
 
         if (noProgress > MAX_NO_PROGRESS) {
-            return finish("handoff", "Several actions in a row made no visible progress.", page, step);
+            if (consultsLeft <= 0) return finish("handoff", "Several actions in a row made no visible progress.", page, step);
+            pendingTrouble = "Several actions in a row made no visible progress.";
+            noProgress = 0;
         }
     }
 
