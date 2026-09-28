@@ -443,7 +443,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
         // Fast mode finishes after the first part; the planner splits the request
         // and hands each part to Jev.
         emit({ type: "status", message: "Several parts: planning, with Jev doing the legwork" });
-        handoff = "This request asks for several separate things. Use delegate for each part (one concrete sub-goal at a time), read what Jev finds, then finish with every part answered.";
+        handoff = "This request asks for several separate things. Use delegate for each part (one concrete sub-goal at a time), read what Jev finds, then answer every part.";
     }
     // A second pass runs when the first stops on a page that doesn't support its answer
     // (e.g. a search results list): finishing there is ruled out, so Jev opens the item.
@@ -491,14 +491,18 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
 
     // 4. LLM planner on the same page.
     emit({ type: "status", message: "Thinking it through" });
-    const tools = [...getBrowserToolDeclarations({ includeTabTools: false }), ...(jev ? [DELEGATE_TOOL] : [])];
+    // The answer is a plain reply rather than a finish() call, so it streams:
+    // tool arguments arrive all at once at the end.
+    const tools = [...getBrowserToolDeclarations({ includeTabTools: false }).filter((tool) => tool.name !== "finish"), ...(jev ? [DELEGATE_TOOL] : [])];
     const chat = llm.createToolChat({
         model: config.navModel,
         tools,
         compactToolResponse: compactPlannerResult,
+        onText: streamAnswer,
+        onTextReset: () => emit({ type: "answer-reset" }),
         systemInstruction: `You are WebPilot, a browser agent working in the user's own browser tab. Today is ${todayLabel()}. Task: ${browserGoal}
 
-Tools: observe() returns the page's actionable elements as [ref] descriptions plus page text. click({ref, element}) and type({ref, text, submit?}) act on refs from the latest observe(). navigate({url}), scroll({direction}), wait({seconds}). finish({result}) ends the task with the answer for the user.${jev ? `
+Tools: observe() returns the page's actionable elements as [ref] descriptions plus page text. click({ref, element}) and type({ref, text, submit?}) act on refs from the latest observe(). navigate({url}), scroll({direction}), wait({seconds}). When you have the answer, reply to the user with it as a normal message, not a tool call: that ends the task, and the user sees it as you write it.${jev ? `
 delegate({goal}) hands a sub-goal to Jev, a fast navigation model. You think and decide; Jev does the legwork.` : ""}
 
 Rules:${jev ? `
@@ -511,7 +515,7 @@ Rules:${jev ? `
 - ${CREDENTIALS_RULE} If the browser already filled them in, you may click the sign-in button; the user is asked to confirm.
 - Answer only with what pages in this task showed. Never fill gaps with general knowledge or typical patterns; say plainly what you couldn't find. Be concise and specific; include names, dates, prices and links when relevant.
 - Work fast. If a few searches or places turn up nothing, stop and say so rather than trying every variation.
-- If you can't fully answer, finish with what you found, what you couldn't find, and where you looked.`,
+- If you can't fully answer, reply with what you found, what you couldn't find, and where you looked.`,
     });
 
     let lastPage: PageModel = parsePage(await browser.snapshot(), PLANNER_TEXT_CHARS);
@@ -598,7 +602,7 @@ Rules:${jev ? `
         if (!nudged && Date.now() - started > PLANNER_WRAP_UP_MS && outputs.length) {
             nudged = true;
             const last = outputs[outputs.length - 1].functionResponse;
-            last.response = { ...last.response, note: "This has taken over a minute. Unless the answer is one step away, call finish now with what you found and what you could not find." };
+            last.response = { ...last.response, note: "This has taken over a minute. Unless the answer is one step away, reply now with what you found and what you could not find." };
         }
         response = await chat.sendMessage(outputs);
         stats.llmCalls++;
@@ -606,7 +610,7 @@ Rules:${jev ? `
 
     // Out of steps: still give the user what was learned.
     await checkCancelled();
-    const wrapUp = await chat.sendMessage("You are out of steps. Do not call any more tools except finish. Give the user the final answer now: what you found, what you could not find, and where you looked.");
+    const wrapUp = await chat.sendMessage("You are out of steps. Do not call any more tools. Reply to the user with the final answer now: what you found, what you could not find, and where you looked.");
     stats.llmCalls++;
     const finishCall = wrapUp.functionCalls.find((call) => call.name === "finish");
     const summary = String((finishCall?.args as Record<string, unknown> | undefined)?.result || wrapUp.text || "").trim();

@@ -32,13 +32,32 @@ function fakeBrowser(log: string[]): TaskBrowser {
     };
 }
 
+/**
+ * A chat completion reply, as JSON or (for streamed requests, like the
+ * planner's) as server-sent events split the way OpenRouter sends them.
+ */
+function chatResponse(message: Record<string, unknown>, stream: boolean): Response {
+    if (!stream) return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    const deltas: Array<Record<string, unknown>> = [];
+    if (Array.isArray(message.tool_calls)) {
+        (message.tool_calls as Array<Record<string, unknown>>).forEach((call, index) => {
+            const fn = call.function as { name: string; arguments: string };
+            deltas.push({ tool_calls: [{ index, id: call.id, type: "function", function: { name: fn.name, arguments: "" } }] });
+            deltas.push({ tool_calls: [{ index, function: { arguments: fn.arguments } }] });
+        });
+    }
+    const content = typeof message.content === "string" ? message.content : "";
+    for (let at = 0; at < content.length; at += 12) deltas.push({ content: content.slice(at, at + 12) });
+    const events = deltas.map((delta) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`).join("") + "data: [DONE]\n\n";
+    return new Response(events, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 /** Routes Jev decisions and chat completions to canned responses. */
 function mockServices(chatReplies: Array<Record<string, unknown>>) {
-    globalThis.fetch = (async (input: string | URL | Request) => {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
-        const body = url.endsWith("/systemone")
-            ? { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } }, usage: {} }
-            : { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
+        if (!url.endsWith("/systemone")) return chatResponse(chatReplies.shift() || { content: "done" }, JSON.parse(String(init?.body || "{}")).stream === true);
+        const body = { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.95 }, multiple_parts: { type: "noul", noul: 0.02 } }, usage: {} };
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
 }
@@ -135,12 +154,13 @@ test("the planner splits a multi-part request and delegates each part to Jev", a
                 body = { model: "jev", answers: { needs_browser: { type: "noul", noul: 0.95 }, parallel_sites: { type: "noul", noul: 0.02 }, changes_something: { type: "noul", noul: 0.02 }, multiple_parts: { type: "noul", noul: 0.9 } }, usage: {} };
             }
         } else {
-            body = { choices: [{ message: chatReplies.shift() || { content: "done" } }] };
+            return chatResponse(chatReplies.shift() || { content: "done" }, JSON.parse(String(init?.body || "{}")).stream === true);
         }
         return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
     }) as typeof fetch;
 
     const events: string[] = [];
+    let streamed = "";
     const result = await runTask({
         goal: "what does the tent at https://shop.example/p/tent cost, and how much does it weigh?",
         config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
@@ -148,10 +168,12 @@ test("the planner splits a multi-part request and delegates each part to Jev", a
         confirm: async () => false,
         onEvent: (event) => {
             if (event.type === "step") events.push(`${event.source} ${event.action} ${event.detail || ""}`.trim());
+            if (event.type === "answer-delta") streamed += event.text;
         },
     });
 
     assert.equal(result.mode, "planner");
+    assert.equal(streamed, result.answer, "the planner's answer streamed in as it was written");
     assert.match(result.answer, /89\.99.*2\.1 kg/);
     assert.deepEqual(fastModeTasks, ["find the tent's price", "find the tent's weight"], "each part went to Jev as its own sub-goal");
     assert.deepEqual(events.filter((event) => event.includes("delegate")), ["llm delegate find the tent's price", "llm delegate find the tent's weight"]);

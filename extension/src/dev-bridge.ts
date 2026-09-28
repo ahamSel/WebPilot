@@ -81,12 +81,20 @@ async function runCommand(engine: Engine, command: RunCommand) {
         return;
     }
     if (command.url) await waitForTabComplete(tabId);
+    let answerStarted = false;
     const hooks = {
         overrides: typeof command.fastMode === "boolean" ? { fastMode: command.fastMode } : undefined,
         // The task reports the confirmation itself (a "confirm" event); just answer it.
         confirm: async () => command.confirm === "allow",
         onEvent: (event: TaskEvent) => {
-            if (event.type === "answer-delta") return;
+            if (event.type === "answer-delta") {
+                // Only when the answer starts showing, for timing.
+                if (answerStarted) return;
+                answerStarted = true;
+                post("/bridge/event", { id: command.id, event: { type: "answer-start" } }).catch(() => {});
+                return;
+            }
+            if (event.type === "answer-reset") answerStarted = false;
             post("/bridge/event", { id: command.id, event }).catch(() => {});
         },
     };
@@ -96,6 +104,7 @@ async function runCommand(engine: Engine, command: RunCommand) {
         for (const message of [command.goal, ...(command.followUps || [])]) {
             if (turns.length) post("/bridge/event", { id: command.id, event: { type: "status", message: `Follow-up: ${message}` } }).catch(() => {});
             const turnStarted = Date.now();
+            answerStarted = false;
             const turn = await engine.run(tabId, message, hooks);
             turns.push({ user: message, answer: turn.answer || "", error: turn.error, mode: turn.mode, stats: turn.stats, durationMs: Date.now() - turnStarted });
         }

@@ -101,6 +101,13 @@ export interface ToolChatOptions {
      */
     compactToolResponse?: (response: Record<string, unknown>) => Record<string, unknown>;
     keepFullToolResults?: number;
+    /**
+     * Streams replies (OpenRouter): text the model writes instead of calling a
+     * tool, such as a final answer, is reported as it arrives. `onTextReset`
+     * withdraws text if the model then turns to a tool call.
+     */
+    onText?: (text: string) => void;
+    onTextReset?: () => void;
 }
 
 export interface ModelClient {
@@ -289,23 +296,15 @@ async function postChatCompletion(
     return json;
 }
 
-/**
- * Streams a chat completion (server-sent events), calling `onDelta` with each
- * piece of text as it arrives, and resolves with the full text.
- */
-async function streamChatCompletion(
-    config: RuntimeModelConfig,
-    body: Record<string, unknown>,
-    onDelta: (text: string) => void
-): Promise<string> {
+/** The `delta` of each server-sent event of a streamed chat completion. */
+async function* streamDeltas(config: RuntimeModelConfig, body: Record<string, unknown>): AsyncGenerator<Record<string, unknown>> {
     const response = await openChatCompletion(config, { ...body, stream: true });
-    if (!response.body) return "";
+    if (!response.body) return;
     const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
-    let full = "";
     for (;;) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) return;
         buffer += value;
         let newline: number;
         while ((newline = buffer.indexOf("\n")) >= 0) {
@@ -314,7 +313,7 @@ async function streamChatCompletion(
             // Blank lines separate events; ": ..." lines are keep-alive comments.
             if (!line.startsWith("data:")) continue;
             const data = line.slice(5).trim();
-            if (data === "[DONE]") return full;
+            if (data === "[DONE]") return;
             let chunk: Record<string, unknown>;
             try {
                 chunk = JSON.parse(data) as Record<string, unknown>;
@@ -324,14 +323,87 @@ async function streamChatCompletion(
             const error = chunk.error as { message?: unknown } | undefined;
             if (error) throw new Error(`${providerDisplayName(config.provider)} request failed: ${String(error.message || "stream error")}`);
             const choice = Array.isArray(chunk.choices) ? chunk.choices[0] as Record<string, unknown> : undefined;
-            const delta = choice?.delta as { content?: unknown } | undefined;
-            if (typeof delta?.content === "string" && delta.content) {
-                full += delta.content;
-                onDelta(delta.content);
-            }
+            if (choice?.delta && typeof choice.delta === "object") yield choice.delta as Record<string, unknown>;
+        }
+    }
+}
+
+/**
+ * Streams a chat completion (server-sent events), calling `onDelta` with each
+ * piece of text as it arrives, and resolves with the full text.
+ */
+async function streamChatCompletion(
+    config: RuntimeModelConfig,
+    body: Record<string, unknown>,
+    onDelta: (text: string) => void
+): Promise<string> {
+    let full = "";
+    for await (const delta of streamDeltas(config, body)) {
+        if (typeof delta.content === "string" && delta.content) {
+            full += delta.content;
+            onDelta(delta.content);
         }
     }
     return full;
+}
+
+/** Streamed reasoning items with the same index are pieces of one item. */
+function mergeReasoningItem(items: Array<Record<string, unknown>>, item: Record<string, unknown>) {
+    const existing = typeof item.index === "number" ? items.find((candidate) => candidate.index === item.index && candidate.type === item.type) : undefined;
+    if (!existing) {
+        items.push({ ...item });
+        return;
+    }
+    for (const [key, value] of Object.entries(item)) {
+        if (typeof value === "string" && typeof existing[key] === "string" && ["text", "data", "summary"].includes(key)) existing[key] = `${existing[key]}${value}`;
+        else if (existing[key] === undefined || existing[key] === null) existing[key] = value;
+    }
+}
+
+/**
+ * Streams one tool-chat turn and rebuilds the message the non-streaming API
+ * returns (content, tool_calls, reasoning_details), so the conversation carries
+ * on the same way. Text is reported as it arrives until the model starts a tool
+ * call; text already reported by then is withdrawn with `onTextReset`.
+ */
+async function streamToolTurn(
+    config: RuntimeModelConfig,
+    body: Record<string, unknown>,
+    onText: (text: string) => void,
+    onTextReset: () => void
+): Promise<Record<string, unknown>> {
+    let content = "";
+    let reported = false;
+    const toolCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
+    const reasoning: Array<Record<string, unknown>> = [];
+    for await (const delta of streamDeltas(config, body)) {
+        if (Array.isArray(delta.reasoning_details)) {
+            for (const item of delta.reasoning_details) if (item && typeof item === "object") mergeReasoningItem(reasoning, item as Record<string, unknown>);
+        }
+        if (Array.isArray(delta.tool_calls)) {
+            if (!toolCalls.length && reported) onTextReset();
+            for (const raw of delta.tool_calls as Array<Record<string, unknown>>) {
+                const index = typeof raw.index === "number" ? raw.index : toolCalls.length;
+                const call = toolCalls[index] || (toolCalls[index] = { id: "", type: "function", function: { name: "", arguments: "" } });
+                const fn = (raw.function || {}) as { name?: unknown; arguments?: unknown };
+                if (typeof raw.id === "string" && raw.id) call.id = raw.id;
+                if (typeof fn.name === "string") call.function.name += fn.name;
+                if (typeof fn.arguments === "string") call.function.arguments += fn.arguments;
+            }
+        }
+        if (typeof delta.content === "string" && delta.content) {
+            content += delta.content;
+            if (!toolCalls.length) {
+                reported = true;
+                onText(delta.content);
+            }
+        }
+    }
+    return {
+        content,
+        ...(toolCalls.length ? { tool_calls: toolCalls.filter(Boolean) } : {}),
+        ...(reasoning.length ? { reasoning_details: reasoning } : {}),
+    };
 }
 
 function firstChoiceMessage(response: Record<string, unknown>): Record<string, unknown> {
@@ -403,8 +475,9 @@ class ChatCompletionsToolChat implements ToolChat {
             if (this.config.provider === "openrouter") body.tool_choice = "auto";
         }
 
-        const response = await postChatCompletion(this.config, body);
-        const messageObj = firstChoiceMessage(response);
+        const messageObj = this.options.onText && this.config.provider === "openrouter"
+            ? await streamToolTurn(this.config, body, this.options.onText, this.options.onTextReset || (() => {}))
+            : firstChoiceMessage(await postChatCompletion(this.config, body));
         const toolCallsRaw = Array.isArray(messageObj.tool_calls) ? messageObj.tool_calls as Array<Record<string, unknown>> : [];
         const text = normalizeContent(messageObj.content);
         const reasoningDetails = Array.isArray(messageObj.reasoning_details) && messageObj.reasoning_details.length

@@ -521,9 +521,10 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
         history.push({ step, action: actionLabel, outcome });
 
         const madeProgress = ok && page.signature !== before.signature;
-        noProgress = madeProgress ? 0 : noProgress + 1;
-        // A stale ref (the page or driver changed) says nothing about the element; it may be tried again.
+        // A stale ref (the page navigated on its own, or the driver changed) says
+        // nothing about the element or the step; it may be tried again.
         const staleRef = !ok && /take a new snapshot/i.test(error || "");
+        noProgress = madeProgress ? 0 : staleRef ? noProgress : noProgress + 1;
         if ((target || !madeProgress) && !staleRef) {
             const used = usedActions.get(before.url) || new Set<string>();
             used.add(actionKey(operation, target, before.url));
