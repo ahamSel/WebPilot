@@ -652,6 +652,7 @@ export async function writeFastModeAnswer(
     result: FastModeResult,
     fullPageText: string,
     onDelta?: (text: string) => void,
+    onReset?: () => void,
     today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" })
 ): Promise<string> {
     const visited = result.pages
@@ -675,7 +676,7 @@ ${visited.slice(0, 10000)}
 Final answer:`,
         thinkingBudget: 512,
     };
-    return onDelta ? writer.generateTextStream(request, onDelta) : writer.generateText(request);
+    return onDelta ? writer.generateTextStream(request, onDelta, onReset) : writer.generateText(request);
 }
 
 export function summarizeFastModeForPlanner(result: FastModeResult): string {
