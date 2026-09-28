@@ -33,6 +33,7 @@
   "exclude": [
     "node_modules",
     "desktop_dist",
+    "extension/dist",
     ".desktop-dev-data"
   ]
 }

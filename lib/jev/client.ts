@@ -54,6 +54,8 @@ export interface JevClientConfig {
     baseUrl: string;
     model: string;
     timeoutMs: number;
+    /** Cancels in-flight decisions when the user stops the task. */
+    signal?: AbortSignal;
 }
 
 export const JEV_MAX_CHOICE_OPTIONS = 255;
@@ -120,7 +122,9 @@ export async function decide(
                 "X-OpenRouter-Title": "WebPilot",
             },
             body,
-            signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+            signal: config.signal
+                ? AbortSignal.any([AbortSignal.timeout(Math.max(1, deadline - Date.now())), config.signal])
+                : AbortSignal.timeout(Math.max(1, deadline - Date.now())),
         });
 
         if (!response.ok) {

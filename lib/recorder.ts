@@ -282,6 +282,7 @@ const PUBLIC_LOG_ACTIONS = new Set([
     "fast_mode_done",
     "fast_mode_handoff",
     "fast_mode_start_url",
+    "fast_mode_skipped",
     "fast_mode_started",
     "fast_mode_text_written",
     "fast_mode_unavailable",

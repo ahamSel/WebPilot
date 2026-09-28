@@ -41,6 +41,8 @@ export interface RuntimeModelConfig {
     fastMode: boolean;
     jevModel: string;
     timeoutMs: number;
+    /** Cancels in-flight requests when the user stops the task. */
+    signal?: AbortSignal;
 }
 
 export interface RuntimeModelSummary {
@@ -240,7 +242,7 @@ async function postChatCompletion(
             method: "POST",
             headers,
             body: JSON.stringify(body),
-            signal: AbortSignal.timeout(remainingMs),
+            signal: config.signal ? AbortSignal.any([AbortSignal.timeout(remainingMs), config.signal]) : AbortSignal.timeout(remainingMs),
         });
 
         if (response.ok) {
@@ -253,7 +255,7 @@ async function postChatCompletion(
             return json;
         }
 
-        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES) {
+        if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES && !config.signal?.aborted) {
             const delay = retryDelayMs(response, attempt);
             if (Date.now() + delay < deadline) {
                 await response.body?.cancel().catch(() => {});
@@ -530,6 +532,7 @@ export function resolveJevConfig(config: RuntimeModelConfig): { jev: JevClientCo
             baseUrl: config.baseUrl,
             model: config.jevModel,
             timeoutMs: Math.min(config.timeoutMs, 20_000),
+            signal: config.signal,
         },
     };
 }

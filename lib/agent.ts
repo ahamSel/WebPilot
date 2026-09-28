@@ -932,7 +932,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 await saveTextArtifact(runCtx, "thread_context.txt", plannerThreadContext);
             }
             const jevSetup = modelConfig.fastMode ? resolveJevConfig(modelConfig) : null;
-            const fastModeEnabled = !!jevSetup && "jev" in jevSetup;
+            let fastModeEnabled = !!jevSetup && "jev" in jevSetup;
             if (jevSetup && "unavailable" in jevSetup) {
                 log("warn", "fast_mode_unavailable", { reason: jevSetup.unavailable });
             }
@@ -948,6 +948,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         gate: "preflight",
                         needsBrowser: Number(preflight.needsBrowserProbability.toFixed(3)),
                         parallel: Number(preflight.parallelProbability.toFixed(3)),
+                        changesSomething: Number(preflight.changesSomethingProbability.toFixed(3)),
                         durationMs: preflight.latencyMs,
                     });
                 } catch (e: any) {
@@ -957,6 +958,13 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
 
             // Follow-ups ("now do the same for Firefox") need the LLM router to turn
             // the message into a complete browser task, so the shortcut is first-turn only.
+            // Requests that change something (buy, send, delete...) go to the careful
+            // planner: Jev is weak at multi-step flows like add to cart -> checkout.
+            if (fastModeEnabled && preflight?.changesSomething) {
+                fastModeEnabled = false;
+                log("info", "fast_mode_skipped", { reason: `Request changes something (changes_something=${preflight.changesSomethingProbability.toFixed(2)})` });
+            }
+
             const routeDecision: RequestRouteDecision = preflight?.browse && !plannerThreadContext
                 ? {
                     mode: "browse",
@@ -1475,7 +1483,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // FAST MODE: Jev picks actions, the LLM only writes text
             // ================================================================
             let fastModeHandoff = "";
-            if (jevSetup && "jev" in jevSetup) {
+            if (fastModeEnabled && jevSetup && "jev" in jevSetup) {
                 const writer = createModelClient(modelConfig);
                 const snapshotText = async () => mcpText(await callMcpTool("browser_snapshot", {}));
                 const fastBrowser: FastModeBrowser = {

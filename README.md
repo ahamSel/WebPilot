@@ -13,6 +13,7 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 ## Features
 
 - Desktop app built with Electron and Next.js.
+- Browser extension for Chrome, Edge, Brave and Arc: WebPilot in the side panel, working in your current tab with your existing logins ([extension/README.md](./extension/README.md)).
 - Browser automation through Playwright MCP, running on the latest stable Playwright.
 - Fast mode: TypeSafe's Jev decision model (through OpenRouter) picks each browser action in ~0.3s while the LLM only writes text, with automatic fallback to the LLM planner.
 - Model providers: OpenRouter (one key for Gemini, Claude, GPT, Qwen, DeepSeek and hundreds more) and local Ollama.
@@ -79,6 +80,14 @@ MODEL_BASE_URL=http://127.0.0.1:11434/v1
 ```
 
 The settings UI can discover local Ollama models and hides known embedding-only models when Ollama reports enough metadata to identify them.
+
+## Browser Extension
+
+```bash
+npm run extension:build
+```
+
+Load `extension/dist` from `chrome://extensions` (Developer mode > Load unpacked), then click the WebPilot icon to open the side panel and **Connect OpenRouter**. See [extension/README.md](./extension/README.md) for how it works, permissions and privacy.
 
 ## Fast Mode
 

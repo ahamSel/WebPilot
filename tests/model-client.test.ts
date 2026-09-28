@@ -226,3 +226,16 @@ test("parses the OpenRouter models catalog for the settings picker", () => {
     assert.match(models[0].description || "", /1049K context · \$0\.375 in \/ \$1\.88 out per 1M/);
     assert.match(models[1].description || "", /free/);
 });
+
+test("stopping a task aborts an in-flight model request immediately", async () => {
+    globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    })) as typeof fetch;
+    const controller = new AbortController();
+    const client = createModelClient({ ...openRouterConfig({ timeoutMs: 60_000 }), signal: controller.signal });
+    const started = Date.now();
+    const pending = client.generateText({ model: "m", prompt: "p" });
+    setTimeout(() => controller.abort(), 50);
+    await assert.rejects(pending, /abort/i);
+    assert.ok(Date.now() - started < 2000, "the request should not wait for its 60s timeout");
+});

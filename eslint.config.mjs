@@ -20,7 +20,15 @@ const eslintConfig = defineConfig([
     "agent_threads/**",
     "e2e_reports/**",
     "readiness_reports/**",
+    "extension/dist/**",
   ]),
+  {
+    // The browser extension is not a Next.js app.
+    files: ["extension/**/*.{ts,tsx}"],
+    rules: {
+      "@next/next/no-img-element": "off",
+    },
+  },
   {
     files: ["electron/**/*.cjs", "scripts/**/*.js"],
     rules: {

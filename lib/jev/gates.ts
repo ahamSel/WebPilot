@@ -13,13 +13,21 @@ export interface PreflightResult {
     browse?: boolean;
     /** false: skip the LLM split analysis; undefined: run it. */
     parallel?: boolean;
+    /**
+     * true: the request changes something (buy, book, send, delete, submit...).
+     * Jev handles finding and reading well but is weak at multi-step flows like
+     * add to cart -> checkout, so these skip fast mode and go to the LLM planner.
+     */
+    changesSomething: boolean;
     needsBrowserProbability: number;
     parallelProbability: number;
+    changesSomethingProbability: number;
     latencyMs: number;
 }
 
 const BROWSE_THRESHOLD = 0.8;
 const PARALLEL_SKIP_BELOW = 0.35;
+const CHANGES_SOMETHING_THRESHOLD = 0.5;
 const ACCEPT_THRESHOLD = 0.8;
 
 export async function jevPreflight(jev: JevClientConfig, message: string, conversationContext: string): Promise<PreflightResult> {
@@ -39,15 +47,22 @@ export async function jevPreflight(jev: JevClientConfig, message: string, conver
                 type: "noul",
                 instructions: "Does the message ask for two or more independent sub-tasks on different websites that could run at the same time without needing each other's results (for example, compare prices on two different stores)? Answer false for single-site tasks and for steps that depend on each other.",
             },
+            changes_something: {
+                type: "noul",
+                instructions: "Does the message ask the assistant to carry out an action that changes something for the user, such as buying, ordering, adding to a cart, booking, paying, sending or replying to a message, posting, deleting, subscribing, or submitting a form? Answer false when the user only wants to find, compare, read, check or summarize information.",
+            },
         }
     );
     const needsBrowser = noulAnswer(decision, "needs_browser");
     const parallel = noulAnswer(decision, "parallel_sites");
+    const changesSomething = noulAnswer(decision, "changes_something");
     return {
         browse: needsBrowser >= BROWSE_THRESHOLD ? true : undefined,
         parallel: parallel < PARALLEL_SKIP_BELOW ? false : undefined,
         needsBrowserProbability: needsBrowser,
         parallelProbability: parallel,
+        changesSomething: changesSomething >= CHANGES_SOMETHING_THRESHOLD,
+        changesSomethingProbability: changesSomething,
         latencyMs: decision.latencyMs,
     };
 }
