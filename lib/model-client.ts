@@ -96,6 +96,8 @@ export interface ModelClient {
         tools: ToolDeclaration[];
     }): ToolChat;
     generateText(options: GenerateTextOptions): Promise<string>;
+    /** Like generateText, but reports text as it is generated. */
+    generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void): Promise<string>;
 }
 
 interface ChatMessage {
@@ -215,10 +217,11 @@ export function reasoningEffortForBudget(budget: number | undefined): "low" | "m
     return "high";
 }
 
-async function postChatCompletion(
+/** Sends a chat-completions request with retries and returns the successful response. */
+async function openChatCompletion(
     config: RuntimeModelConfig,
     body: Record<string, unknown>
-): Promise<Record<string, unknown>> {
+): Promise<Response> {
     const url = buildChatCompletionsUrl(config.baseUrl);
     if (!url) {
         throw new Error(`Missing base URL for ${providerDisplayName(config.provider)}.`);
@@ -245,15 +248,7 @@ async function postChatCompletion(
             signal: config.signal ? AbortSignal.any([AbortSignal.timeout(remainingMs), config.signal]) : AbortSignal.timeout(remainingMs),
         });
 
-        if (response.ok) {
-            const json = await response.json() as Record<string, unknown>;
-            // OpenRouter can report upstream failures inside a 200 response.
-            const error = json.error as { message?: unknown } | undefined;
-            if (error && !Array.isArray(json.choices)) {
-                throw new Error(`${providerDisplayName(config.provider)} request failed: ${String(error.message || "unknown error")}`);
-            }
-            return json;
-        }
+        if (response.ok) return response;
 
         if (RETRYABLE_STATUSES.has(response.status) && attempt < MAX_RETRIES && !config.signal?.aborted) {
             const delay = retryDelayMs(response, attempt);
@@ -268,6 +263,65 @@ async function postChatCompletion(
         const message = extractErrorMessage(text).slice(0, 400);
         throw new Error(`${providerDisplayName(config.provider)} request failed (${response.status}): ${message}`);
     }
+}
+
+async function postChatCompletion(
+    config: RuntimeModelConfig,
+    body: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+    const response = await openChatCompletion(config, body);
+    const json = await response.json() as Record<string, unknown>;
+    // OpenRouter can report upstream failures inside a 200 response.
+    const error = json.error as { message?: unknown } | undefined;
+    if (error && !Array.isArray(json.choices)) {
+        throw new Error(`${providerDisplayName(config.provider)} request failed: ${String(error.message || "unknown error")}`);
+    }
+    return json;
+}
+
+/**
+ * Streams a chat completion (server-sent events), calling `onDelta` with each
+ * piece of text as it arrives, and resolves with the full text.
+ */
+async function streamChatCompletion(
+    config: RuntimeModelConfig,
+    body: Record<string, unknown>,
+    onDelta: (text: string) => void
+): Promise<string> {
+    const response = await openChatCompletion(config, { ...body, stream: true });
+    if (!response.body) return "";
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buffer = "";
+    let full = "";
+    for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += value;
+        let newline: number;
+        while ((newline = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newline).trim();
+            buffer = buffer.slice(newline + 1);
+            // Blank lines separate events; ": ..." lines are keep-alive comments.
+            if (!line.startsWith("data:")) continue;
+            const data = line.slice(5).trim();
+            if (data === "[DONE]") return full;
+            let chunk: Record<string, unknown>;
+            try {
+                chunk = JSON.parse(data) as Record<string, unknown>;
+            } catch {
+                continue;
+            }
+            const error = chunk.error as { message?: unknown } | undefined;
+            if (error) throw new Error(`${providerDisplayName(config.provider)} request failed: ${String(error.message || "stream error")}`);
+            const choice = Array.isArray(chunk.choices) ? chunk.choices[0] as Record<string, unknown> : undefined;
+            const delta = choice?.delta as { content?: unknown } | undefined;
+            if (typeof delta?.content === "string" && delta.content) {
+                full += delta.content;
+                onDelta(delta.content);
+            }
+        }
+    }
+    return full;
 }
 
 function firstChoiceMessage(response: Record<string, unknown>): Record<string, unknown> {
@@ -396,6 +450,15 @@ class ChatCompletionsModelClient implements ModelClient {
     }
 
     async generateText(options: GenerateTextOptions): Promise<string> {
+        const response = await postChatCompletion(this.config, this.textBody(options));
+        return normalizeContent(firstChoiceMessage(response).content);
+    }
+
+    async generateTextStream(options: GenerateTextOptions, onDelta: (text: string) => void): Promise<string> {
+        return (await streamChatCompletion(this.config, this.textBody(options), onDelta)).trim();
+    }
+
+    private textBody(options: GenerateTextOptions): Record<string, unknown> {
         const messages: ChatMessage[] = [];
         if (options.systemInstruction) {
             messages.push({ role: "system", content: options.systemInstruction });
@@ -411,9 +474,7 @@ class ChatCompletionsModelClient implements ModelClient {
             // OpenRouter ignores this for models without reasoning support.
             body.reasoning = { effort, exclude: true };
         }
-
-        const response = await postChatCompletion(this.config, body);
-        return normalizeContent(firstChoiceMessage(response).content);
+        return body;
     }
 }
 

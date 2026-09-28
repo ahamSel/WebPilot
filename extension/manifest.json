@@ -11,19 +11,33 @@
     "128": "icons/128x128.png"
   },
   "action": {
-    "default_title": "Open WebPilot",
+    "default_title": "Open WebPilot (Ctrl+Shift+Space)",
     "default_icon": {
       "16": "icons/16x16.png",
       "32": "icons/32x32.png"
     }
   },
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["sidePanel", "debugger", "tabs", "storage", "identity"],
-  "host_permissions": ["https://openrouter.ai/*", "http://127.0.0.1/*", "http://localhost/*"]
+  "permissions": [
+    "sidePanel",
+    "debugger",
+    "tabs",
+    "storage",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://openrouter.ai/*"
+  ],
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "MacCtrl+Shift+Space"
+      },
+      "description": "Open WebPilot for this tab"
+    }
+  }
 }
