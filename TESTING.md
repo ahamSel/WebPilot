@@ -22,6 +22,18 @@ This verifies the versioned browser tool schema adapter against current WebPilot
 
 It also covers the OpenRouter/Ollama model client with a mocked `fetch`: request URLs and headers, tool-call round trips including `reasoning_details`, retries on rate limits, error messages, migration of legacy Gemini/OpenAI/Claude settings, and parsing of the OpenRouter models catalog. No API key or network access is needed.
 
+`tests/jev.test.ts` covers fast mode without network access: accessibility-snapshot parsing, candidate selection, the Jev client, the step loop against a fake browser (done, no-progress handoff, irreversible-click guard, typing with submit), and the Jev gates.
+
+## Fast Mode Benchmark
+
+```bash
+npm run browsers:install
+OPENROUTER_API_KEY=sk-or-... npm run bench:fast-mode
+npm run bench:fast-mode -- --only mosaic,voyager --modes fast --repeat 3
+```
+
+Runs a fixed set of public-web tasks (Wikipedia, MDN, example.com) headless in both the LLM-only mode and fast mode, checks each final answer against expected patterns, and writes JSON and Markdown reports with time, steps, LLM calls, Jev calls and fast-mode handoffs to `e2e_reports/`. Model latency on OpenRouter varies run to run, so compare medians over `--repeat 3` or more before drawing conclusions.
+
 ## Deterministic Browser Smoke
 
 ```bash

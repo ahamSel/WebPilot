@@ -32,7 +32,7 @@ export interface RunMetadata {
 export interface StepRecord {
     step: number;
     name: string;
-    source?: "llm" | "seed" | "direct";
+    source?: "llm" | "seed" | "direct" | "jev";
     args: unknown;
     ok: boolean;
     error?: string;
@@ -230,6 +230,8 @@ function sanitizePerformance(value: unknown) {
         "synthDurationMs",
         "coordinatorCallCount",
         "coordinatorDurationMs",
+        "jevCallCount",
+        "jevDurationMs",
     ]);
     return Object.fromEntries(
         Object.entries(value as Record<string, unknown>).filter(([key]) => allowed.has(key))
@@ -271,12 +273,23 @@ const PUBLIC_LOG_ACTIONS = new Set([
     "coordinator_analyzing",
     "coordinator_failed",
     "coordinator_not_parallel",
+    "coordinator_skipped",
     "coordinator_split_response",
     "dispatch_tool",
+    "fast_mode_answer_written",
+    "fast_mode_done",
+    "fast_mode_handoff",
+    "fast_mode_start_url",
+    "fast_mode_started",
+    "fast_mode_text_written",
+    "fast_mode_unavailable",
     "finish",
     "finish_evidence_check",
     "goal_seed_navigation",
     "goal_seed_navigation_failed",
+    "jev_answer_check_failed",
+    "jev_decision",
+    "jev_preflight_failed",
     "launching_browser",
     "mcp_auto_launching",
     "mcp_connected",

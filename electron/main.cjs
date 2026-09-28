@@ -687,6 +687,7 @@ function runtimeSettingsDefaults() {
         synthModel,
         reviewModel,
         synthEnabled: boolFromInput(process.env.MODEL_SYNTH_ENABLED, true),
+        fastMode: boolFromInput(process.env.WEBPILOT_FAST_MODE, false),
         browser: sanitizeBrowserSettings(),
     };
 }
@@ -697,7 +698,7 @@ function sanitizeRuntimeSettings(value) {
     // Settings saved for Gemini/OpenAI/Claude migrate to OpenRouter defaults:
     // their API keys and model ids are not valid there.
     const input = isLegacyProvider(raw.provider)
-        ? { synthEnabled: raw.synthEnabled, browser: raw.browser }
+        ? { synthEnabled: raw.synthEnabled, fastMode: raw.fastMode, browser: raw.browser }
         : raw;
     const provider = normalizeProvider(input.provider || defaults.provider);
     const providerDefaults = defaultModelsForProvider(provider);
@@ -709,6 +710,7 @@ function sanitizeRuntimeSettings(value) {
         synthModel: typeof input.synthModel === "string" && input.synthModel.trim() ? input.synthModel.trim() : providerDefaults.synthModel,
         reviewModel: typeof input.reviewModel === "string" && input.reviewModel.trim() ? input.reviewModel.trim() : providerDefaults.reviewModel,
         synthEnabled: boolFromInput(input.synthEnabled, defaults.synthEnabled),
+        fastMode: boolFromInput(input.fastMode, defaults.fastMode),
         browser: sanitizeBrowserSettings(input.browser),
     };
 }

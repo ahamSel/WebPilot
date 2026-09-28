@@ -14,6 +14,7 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 
 - Desktop app built with Electron and Next.js.
 - Browser automation through Playwright MCP, running on the latest stable Playwright.
+- Fast mode: TypeSafe's Jev decision model (through OpenRouter) picks each browser action in ~0.3s while the LLM only writes text, with automatic fallback to the LLM planner.
 - Model providers: OpenRouter (one key for Gemini, Claude, GPT, Qwen, DeepSeek and hundreds more) and local Ollama.
 - Runtime settings UI for provider, model, browser source, profile strategy, headless mode, and isolation.
 - Local run recording with logs, step traces, artifacts, timing, and final results.
@@ -79,6 +80,18 @@ MODEL_BASE_URL=http://127.0.0.1:11434/v1
 
 The settings UI can discover local Ollama models and hides known embedding-only models when Ollama reports enough metadata to identify them.
 
+## Fast Mode
+
+Turn on **Fast mode (Jev)** in Settings (OpenRouter only). Instead of asking the LLM to plan every click, WebPilot asks [Jev](https://openrouter.ai/typesafe/jev-1.13), a decision model that returns a choice with probabilities in about 0.3 seconds. The LLM still writes anything that needs text (search queries, the final answer), and the regular planner takes over whenever Jev is stuck, blocked, or about to click something irreversible.
+
+Measure it on your own tasks:
+
+```bash
+OPENROUTER_API_KEY=sk-or-... npm run bench:fast-mode
+```
+
+In fast mode the page text and element labels of each step are sent to TypeSafe through OpenRouter.
+
 ## Browser Modes
 
 The app supports these runtime browser modes:
@@ -103,6 +116,7 @@ npm run browsers:install
 npm run browser:smoke
 npm run health
 npm run agent:cli -- "Go to https://example.com and summarize the page"
+npm run bench:fast-mode
 npm run mcp:stdio
 npm run desktop:build
 ```
