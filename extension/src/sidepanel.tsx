@@ -3,9 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
-import { CdpBrowser } from "../../lib/cdp/driver";
 import { TaskCancelledError, runTask, type TaskEvent } from "../../lib/core/run-task";
-import { DebuggerTransport, isRestrictedUrl } from "./debugger-transport";
+import { TabBrowser } from "./tab-browser";
 import { connectOpenRouter } from "./openrouter-auth";
 import { loadSettings, modelConfigFor, saveSettings, type ExtensionSettings } from "./settings";
 
@@ -65,14 +64,15 @@ function hostOf(url: string): string {
 
 /**
  * The tab WebPilot works in: the active tab of this window. When the panel page
- * itself is open as a tab (e.g. in tests), the most recently used web tab instead.
+ * itself is open as a tab (e.g. in tests), the most recently used other tab.
  */
 async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
+    const panelUrl = chrome.runtime.getURL("");
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && !tab.url?.startsWith(chrome.runtime.getURL(""))) return tab;
+    if (tab && !tab.url?.startsWith(panelUrl)) return tab;
     const tabs = await chrome.tabs.query({ currentWindow: true });
     return tabs
-        .filter((candidate) => /^https?:/i.test(candidate.url || ""))
+        .filter((candidate) => !(candidate.url || "").startsWith(panelUrl))
         .sort((left, right) => (right.lastAccessed || 0) - (left.lastAccessed || 0))[0];
 }
 
@@ -292,17 +292,17 @@ function App() {
         controllerRef.current = controller;
         const addStep = (step: Omit<LogStep, "atMs">) => updateTurn(id, (turn) => ({ ...turn, steps: [...turn.steps, { ...step, atMs: Date.now() - startedAt }] }));
 
-        let transport: DebuggerTransport | null = null;
+        let browser: TabBrowser | null = null;
         try {
             const tab = await activeTab();
-            if (!tab?.id || isRestrictedUrl(tab.url)) {
-                throw new Error("Open a regular web page in this tab first. Chrome doesn't let extensions control its own pages or the Web Store.");
-            }
-            transport = await DebuggerTransport.attach(tab.id);
+            if (!tab?.id) throw new Error("No tab to work in. Open a tab and try again.");
+            // Attaches to the tab only when the task needs the page; Chrome pages
+            // (New Tab, chrome://) are first navigated to the task's website.
+            browser = new TabBrowser(tab.id);
             const result = await runTask({
                 goal: goal.trim(),
                 config: modelConfigFor(settings),
-                browser: new CdpBrowser(transport),
+                browser,
                 history,
                 signal: controller.signal,
                 confirm: (action, url) => new Promise<boolean>((resolve) => {
@@ -331,7 +331,7 @@ function App() {
             const message = error instanceof TaskCancelledError ? "Stopped." : error instanceof Error ? error.message : String(error);
             updateTurn(id, (turn) => ({ ...turn, error: message, finishedAt: Date.now() }));
         } finally {
-            await transport?.detach();
+            await browser?.detach();
             controllerRef.current = null;
             setPending(null);
             setRunning(false);

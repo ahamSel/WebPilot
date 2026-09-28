@@ -43,6 +43,11 @@ export interface RunTaskOptions {
     onEvent?: (event: TaskEvent) => void;
     signal?: AbortSignal;
     maxPlannerSteps?: number;
+    /**
+     * Where to start when the current tab is not a web page (e.g. the browser's
+     * New Tab page) and no site is obvious. `{query}` is replaced with the request.
+     */
+    fallbackSearchUrl?: string;
 }
 
 export interface RunTaskResult {
@@ -180,19 +185,22 @@ Use "chat" when no browser action or live page is needed (greetings, questions a
         await browser.navigate(explicitUrl);
         stats.steps++;
     } else {
+        const onWebPage = isWebPage(current.url);
         const suggestion = await llm.generateText({
             model: config.navModel,
-            systemInstruction: "You pick where a browser task should start. Reply with STAY when the task is about the page the user already has open (or can be done from it); otherwise reply with one absolute https URL. Reply with nothing else.",
-            prompt: `Task: ${browserGoal}\nCurrent tab: ${current.title || "(blank)"} ${current.url || ""}`,
+            systemInstruction: "You pick where a browser task should start. Reply with STAY when the task is about the web page the user already has open (or can be done from it); otherwise reply with one absolute https URL, such as the site the task names or a good search page. Reply with nothing else.",
+            prompt: `Task: ${browserGoal}\nCurrent tab: ${onWebPage ? `${current.title || "(untitled)"} ${current.url}` : "a browser page with no website (such as the New Tab page); STAY is not possible"}`,
         });
         stats.llmCalls++;
-        const url = extractExplicitUrls(suggestion)[0];
-        if (url && !/\bSTAY\b/.test(suggestion)) {
+        let url = extractExplicitUrls(suggestion)[0];
+        if ((!url || /\bSTAY\b/.test(suggestion)) && onWebPage) url = "";
+        if (!url && !onWebPage) {
+            url = (options.fallbackSearchUrl || "https://www.google.com/search?q={query}").replace("{query}", encodeURIComponent(browserGoal));
+        }
+        if (url) {
             emit({ type: "step", source: "llm", action: "navigate", detail: url, url });
             await browser.navigate(url);
             stats.steps++;
-        } else if (!isWebPage(current.url)) {
-            throw new Error("Open a web page in this tab, or mention the site to use.");
         }
     }
     await checkCancelled();
