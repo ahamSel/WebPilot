@@ -24,6 +24,17 @@ const nextConfig: NextConfig = {
   },
   // Keep local/release commands on webpack for Windows packaging; Turbopack
   // requires native SWC bindings that may be unavailable on release hosts.
+  webpack: (config) => {
+    // The Playwright MCP driver resolves Playwright at runtime via
+    // createRequire(<cwd>/package.json) so dev, standalone, and Electron share one
+    // module instance. Webpack otherwise rewrites dynamic createRequire() calls
+    // to `undefined`, so leave them to Node for this module.
+    config.module.rules.push({
+      test: /[\\/]lib[\\/]playwright-mcp-driver\.ts$/,
+      parser: { createRequire: false },
+    });
+    return config;
+  },
 };
 
 export default nextConfig;
