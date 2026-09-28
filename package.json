@@ -22,6 +22,7 @@
     "agent:e2e": "node scripts/agent-e2e.js",
     "bench:fast-mode": "tsx scripts/bench-fast-mode.ts",
     "extension:build": "node scripts/build-extension.mjs",
+    "extension:build:dev": "node scripts/build-extension.mjs --dev",
     "extension:dev": "node scripts/build-extension.mjs --watch",
     "extension:smoke": "tsx scripts/extension-smoke.ts",
     "browser:smoke": "node scripts/browser-smoke.mjs",

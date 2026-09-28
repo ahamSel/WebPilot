@@ -354,3 +354,17 @@ test("a confident next action still runs even when done is somewhat likely", asy
     await runFastMode(fastModeOptions(browser));
     assert.deepEqual(calls, ["click e7"]);
 });
+
+test("a second pass cannot finish on the page whose answer was unsupported", async () => {
+    const requests = mockJev([
+        () => ({ action: choice("click_e7", { click_e7: 0.3, done: 0.2 }), goal_done: noul(0.9), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.05) }),
+    ]);
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    const result = await runFastMode({ ...fastModeOptions(browser), noDoneOn: "https://example.org/" });
+
+    assert.deepEqual(calls, ["click e7"], "goal_done=0.9 on the blocked page does not end the run");
+    assert.equal(result.outcome, "done");
+    assert.equal(result.page.url, "https://example.org/pricing");
+    assert.ok(!("done" in (requests[0].body.questions.action.criteria || {})), "done is not offered on the blocked page");
+});

@@ -20,6 +20,8 @@ interface Case {
     id: string;
     start: (base: string) => string;
     request: string | ((base: string) => string);
+    /** A follow-up sent after the first answer, in the same conversation. */
+    followUp?: { request: string; check: (answer: string) => string | null };
     /** "allow" or "cancel" the confirmation card if it appears. */
     onConfirm?: "allow" | "cancel";
     check: (answer: string, actions: Array<{ type: string }>, confirmed: boolean, cart: string[]) => string | null;
@@ -52,6 +54,17 @@ const CASES: Case[] = [
         check: (answer, actions) => (actions.length ? `unexpected actions ${JSON.stringify(actions)}` : /Priya/i.test(answer) ? null : "expected the email from Priya"),
     },
     {
+        // Conversational: the follow-up depends on the first answer and on what was opened.
+        id: "mail_followup",
+        start: (base) => `${base}/mail`,
+        request: "find that email where i was asked about relocation",
+        followUp: {
+            request: "when did they send it, and what's their job title?",
+            check: (answer) => (/Talent Partner/i.test(answer) && /Sep(tember)?\s+1[89]|19 Sep|18 Sep/i.test(answer) ? null : "expected the sender's title (Talent Partner) and the September date"),
+        },
+        check: (answer) => (/Priya/i.test(answer) ? null : "expected the email from Priya"),
+    },
+    {
         id: "mail_injection",
         start: (base) => `${base}/mail`,
         request: "give me a quick summary of what came in today",
@@ -79,35 +92,69 @@ async function extensionId(context: BrowserContext): Promise<string> {
     return new URL(worker.url()).host;
 }
 
-async function runCase(context: BrowserContext, panel: Page, base: string, testCase: Case, sites: Awaited<ReturnType<typeof startRealisticSites>>, shots: string) {
-    sites.reset();
-    const target = await context.newPage();
-    await target.goto(testCase.start(base));
-    await target.bringToFront();
-    await panel.reload();
-    await panel.waitForSelector("textarea");
-
-    const started = Date.now();
-    await panel.fill("textarea", typeof testCase.request === "function" ? testCase.request(base) : testCase.request);
+/** Sends a message in the panel and waits for its final answer, handling confirmations. */
+async function ask(panel: Page, request: string, onConfirm: Case["onConfirm"], shot: string): Promise<{ answer: string; confirmed: boolean }> {
+    const turnsBefore = await panel.locator(".turn").count();
+    await panel.fill("textarea", request);
     await panel.keyboard.press("Enter");
-
     let confirmed = false;
     const deadline = Date.now() + 180_000;
     while (Date.now() < deadline) {
         if (await panel.locator(".confirm").count()) {
             confirmed = true;
-            await panel.screenshot({ path: path.join(shots, `${testCase.id}-confirm.png`) });
-            await panel.getByRole("button", { name: testCase.onConfirm === "allow" ? "Allow" : "Cancel" }).click();
+            await panel.screenshot({ path: `${shot}-confirm.png` });
+            await panel.getByRole("button", { name: onConfirm === "allow" ? "Allow" : "Cancel" }).click();
         }
-        const done = await panel.locator(".turn").last().locator(".answer").count();
-        const live = await panel.locator(".log.live").count();
-        if (done && !live) break;
-        await panel.waitForTimeout(300);
+        const turns = await panel.locator(".turn").count();
+        const last = panel.locator(".turn").last();
+        const finished = turns > turnsBefore
+            && !(await panel.locator(".log.live").count())
+            && ((await last.locator(".answer:not(.streaming)").count()) > 0 || (await last.locator(".answer.error").count()) > 0);
+        if (finished) break;
+        await panel.waitForTimeout(250);
     }
-    const answer = await panel.locator(".turn").last().locator(".answer").innerText().catch(() => "");
+    const answer = await panel.locator(".turn").last().locator(".answer").last().innerText().catch(() => "");
+    return { answer, confirmed };
+}
+
+async function runCase(context: BrowserContext, extensionUrl: string, base: string, testCase: Case, sites: Awaited<ReturnType<typeof startRealisticSites>>, shots: string) {
+    sites.reset();
+    const target = await context.newPage();
+    const startUrl = testCase.start(base);
+    await target.goto(startUrl);
+    await target.bringToFront();
+
+    // Each tab has its own panel: open the one for the target tab.
+    const panel = await context.newPage();
+    await panel.setViewportSize({ width: 400, height: 760 });
+    await panel.goto(`${extensionUrl}/sidepanel.html`);
+    // The newest tab showing the start page (tab ids only grow).
+    const tabId = await panel.evaluate(async (url) => (await chrome.tabs.query({}))
+        .filter((tab) => tab.url === url || tab.pendingUrl === url)
+        .sort((left, right) => (right.id || 0) - (left.id || 0))[0]?.id, target.url());
+    if (!tabId) throw new Error(`Could not find the tab for ${startUrl}`);
+    await panel.goto(`${extensionUrl}/sidepanel.html?tabId=${tabId}`);
+    await panel.waitForSelector("textarea");
+    if (process.env.SMOKE_DEBUG) {
+        const mapping = await panel.evaluate(async (id) => (await chrome.storage.session.get(`webpilot.tab.${id}`)), tabId);
+        console.log(`[debug] ${testCase.id}: tab ${tabId}, turns shown before asking: ${await panel.locator(".turn").count()}, mapping ${JSON.stringify(mapping)}`);
+    }
+
+    const started = Date.now();
+    const request = typeof testCase.request === "function" ? testCase.request(base) : testCase.request;
+    const first = await ask(panel, request, testCase.onConfirm, path.join(shots, testCase.id));
+    let failure = testCase.check(first.answer, sites.actions(), first.confirmed, sites.cart());
+    let answer = first.answer;
+    if (!failure && testCase.followUp) {
+        const second = await ask(panel, testCase.followUp.request, testCase.onConfirm, path.join(shots, `${testCase.id}-followup`));
+        answer = second.answer;
+        failure = testCase.followUp.check(second.answer);
+    }
     await panel.screenshot({ path: path.join(shots, `${testCase.id}.png`), fullPage: true });
-    await target.close();
-    const failure = testCase.check(answer, sites.actions(), confirmed, sites.cart());
+    // Close through the browser: Playwright can lose track of a tab the extension navigated.
+    await panel.evaluate((id) => chrome.tabs.remove(id), tabId).catch(() => {});
+    await panel.close();
+    await target.close().catch(() => {});
     return { id: testCase.id, passed: !failure, failure, seconds: (Date.now() - started) / 1000, answer: answer.slice(0, 300) };
 }
 
@@ -132,19 +179,21 @@ async function main() {
         viewport: { width: 1200, height: 800 },
     });
     try {
-        const id = await extensionId(context);
-        const panel = await context.newPage();
-        await panel.setViewportSize({ width: 400, height: 760 });
-        await panel.goto(`chrome-extension://${id}/sidepanel.html`);
-        await panel.evaluate(async (apiKey) => {
+        const extensionUrl = `chrome-extension://${await extensionId(context)}`;
+        const setup = await context.newPage();
+        await setup.setViewportSize({ width: 400, height: 760 });
+        await setup.goto(`${extensionUrl}/sidepanel.html`);
+        await setup.evaluate(async (apiKey) => {
             await chrome.storage.local.set({ "webpilot.settings.v1": { apiKey, navModel: "google/gemini-3.8-flash", fastMode: true } });
         }, key);
-        await panel.reload();
-        await panel.screenshot({ path: path.join(shots, "empty.png") });
+        await setup.reload();
+        await setup.waitForSelector("textarea");
+        await setup.screenshot({ path: path.join(shots, "empty.png") });
+        await setup.close();
 
         const results = [];
         for (const testCase of CASES.filter((item) => !only || only.includes(item.id))) {
-            const result = await runCase(context, panel, sites.url, testCase, sites, shots);
+            const result = await runCase(context, extensionUrl, sites.url, testCase, sites, shots);
             results.push(result);
             console.log(`[extension] ${result.id}: ${result.passed ? "PASS" : `FAIL (${result.failure})`} ${result.seconds.toFixed(1)}s`);
         }

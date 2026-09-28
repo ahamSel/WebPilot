@@ -1,54 +1,17 @@
 /// <reference types="chrome" />
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import ReactMarkdown from "react-markdown";
-import { TaskCancelledError, runTask, type TaskEvent } from "../../lib/core/run-task";
-import { TabBrowser } from "./tab-browser";
 import { connectOpenRouter } from "./openrouter-auth";
-import { loadSettings, modelConfigFor, saveSettings, type ExtensionSettings } from "./settings";
-
-interface LogStep {
-    lane: "jev" | "llm" | "note";
-    label: string;
-    detail?: string;
-    atMs: number;
-}
-
-interface Turn {
-    id: number;
-    user: string;
-    answer?: string;
-    error?: string;
-    steps: LogStep[];
-    startedAt: number;
-    finishedAt?: number;
-    mode?: "chat" | "fast" | "planner";
-    stats?: { jevCalls: number; llmCalls: number };
-}
-
-interface PendingConfirm {
-    action: string;
-    url: string;
-    resolve: (allowed: boolean) => void;
-}
+import { PANEL_PORT_PREFIX, type ConversationSummary, type EngineMessage, type PanelMessage, type PendingConfirm, type SessionState, type Turn } from "./protocol";
+import { loadSettings, saveSettings, type ExtensionSettings } from "./settings";
 
 const EXAMPLES = [
     { text: "Summarize this page", note: "Reads the tab you have open" },
     { text: "Find some recent tents for sale on Kijiji", note: "Searches and compares listings" },
     { text: "What's trending on Hacker News right now?", note: "Opens the site and reads the front page" },
 ];
-
-const ACTION_LABELS: Record<string, string> = {
-    click: "click",
-    type: "type",
-    scroll_down: "scroll down",
-    scroll_up: "scroll up",
-    back: "go back",
-    navigate: "open",
-    scroll: "scroll",
-    wait: "wait",
-};
 
 function seconds(ms: number): string {
     return `${(ms / 1000).toFixed(1)}s`;
@@ -62,18 +25,78 @@ function hostOf(url: string): string {
     }
 }
 
-/**
- * The tab WebPilot works in: the active tab of this window. When the panel page
- * itself is open as a tab (e.g. in tests), the most recently used other tab.
- */
-async function activeTab(): Promise<chrome.tabs.Tab | undefined> {
-    const panelUrl = chrome.runtime.getURL("");
+/** The tab this panel belongs to: from the panel URL, or the active tab as a fallback. */
+async function panelTabId(): Promise<number | undefined> {
+    const fromUrl = Number(new URLSearchParams(location.search).get("tabId"));
+    if (Number.isInteger(fromUrl) && fromUrl > 0) return fromUrl;
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (tab && !tab.url?.startsWith(panelUrl)) return tab;
-    const tabs = await chrome.tabs.query({ currentWindow: true });
-    return tabs
-        .filter((candidate) => !(candidate.url || "").startsWith(panelUrl))
-        .sort((left, right) => (right.lastAccessed || 0) - (left.lastAccessed || 0))[0];
+    return tab?.id;
+}
+
+function HistoryIcon() {
+    return (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+            <path d="M3 3v5h5M12 7v5l3 2" />
+        </svg>
+    );
+}
+
+function TrashIcon() {
+    return (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" />
+        </svg>
+    );
+}
+
+function relativeTime(timestamp: number): string {
+    const minutes = Math.round((Date.now() - timestamp) / 60_000);
+    if (minutes < 1) return "just now";
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.round(hours / 24);
+    return days < 7 ? `${days}d ago` : new Date(timestamp).toLocaleDateString();
+}
+
+function History({ items, currentId, onOpen, onDelete, onClearAll, onClose }: {
+    items: ConversationSummary[] | null;
+    currentId?: string;
+    onOpen: (id: string) => void;
+    onDelete: (id: string) => void;
+    onClearAll: () => void;
+    onClose: () => void;
+}) {
+    return (
+        <div className="settings">
+            <div className="row" style={{ alignItems: "center", marginBottom: 12 }}>
+                <button className="icon-button" onClick={onClose} aria-label="Back"><BackIcon /></button>
+                <h2 style={{ margin: 0, flex: 1 }}>History</h2>
+                {!!items?.length && <button className="btn" onClick={onClearAll}>Clear all</button>}
+            </div>
+            {items === null && <p className="help">Loading…</p>}
+            {items?.length === 0 && <p className="help">No conversations yet. They are saved on this device only.</p>}
+            {items?.map((item) => (
+                <div key={item.id} className={`history-item${item.id === currentId ? " current" : ""}`}>
+                    <button className="history-open" onClick={() => onOpen(item.id)}>
+                        <span className="history-title">{item.title || "Untitled"}</span>
+                        <small>{relativeTime(item.updatedAt)} · {item.turnCount} message{item.turnCount === 1 ? "" : "s"}{item.id === currentId ? " · open here" : ""}</small>
+                    </button>
+                    <button className="icon-button" onClick={() => onDelete(item.id)} aria-label={`Delete ${item.title}`}><TrashIcon /></button>
+                </div>
+            ))}
+            {!!items?.length && <p className="help">Saved on this device only. Opening one continues it in this tab; WebPilot remembers what it did.</p>}
+        </div>
+    );
+}
+
+function ClearIcon() {
+    return (
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14" />
+        </svg>
+    );
 }
 
 function Logo() {
@@ -147,7 +170,7 @@ function FlightLog({ turn, live }: { turn: Turn; live: boolean }) {
     );
 }
 
-function ConfirmCard({ pending }: { pending: PendingConfirm }) {
+function ConfirmCard({ pending, onAnswer }: { pending: PendingConfirm; onAnswer: (allowed: boolean) => void }) {
     return (
         <div className="confirm" role="alertdialog" aria-label="Confirm action">
             <h3>Hold on — this can&apos;t be undone</h3>
@@ -155,8 +178,8 @@ function ConfirmCard({ pending }: { pending: PendingConfirm }) {
                 WebPilot wants to click <span className="action">{pending.action}</span> on {hostOf(pending.url)}.
             </p>
             <div className="row">
-                <button className="btn primary" onClick={() => pending.resolve(true)}>Allow</button>
-                <button className="btn" onClick={() => pending.resolve(false)}>Cancel</button>
+                <button className="btn primary" onClick={() => onAnswer(true)}>Allow</button>
+                <button className="btn" onClick={() => onAnswer(false)}>Cancel</button>
             </div>
         </div>
     );
@@ -241,109 +264,100 @@ function Settings({ settings, onChange, onClose }: { settings: ExtensionSettings
 
 function App() {
     const [settings, setSettings] = useState<ExtensionSettings | null>(null);
-    const [view, setView] = useState<"chat" | "settings">("chat");
-    const [turns, setTurns] = useState<Turn[]>([]);
-    const [input, setInput] = useState("");
-    const [running, setRunning] = useState(false);
-    const [pending, setPending] = useState<PendingConfirm | null>(null);
+    const [view, setView] = useState<"chat" | "settings" | "history">("chat");
+    const [history, setHistory] = useState<ConversationSummary[] | null>(null);
+    const [tabId, setTabId] = useState<number | null>(null);
     const [tabTitle, setTabTitle] = useState("");
-    const controllerRef = useRef<AbortController | null>(null);
+    const [session, setSession] = useState<SessionState | null>(null);
+    const [input, setInput] = useState("");
+    const portRef = useRef<chrome.runtime.Port | null>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
-    const nextId = useRef(1);
+    const inputRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
         loadSettings().then(setSettings);
-        const refresh = () => activeTab().then((tab) => setTabTitle(tab?.title || ""));
-        refresh();
-        chrome.tabs.onActivated.addListener(refresh);
-        chrome.tabs.onUpdated.addListener(refresh);
-        return () => {
-            chrome.tabs.onActivated.removeListener(refresh);
-            chrome.tabs.onUpdated.removeListener(refresh);
-        };
+        panelTabId().then((id) => setTabId(id ?? null));
     }, []);
+
+    // Connect to this tab's session in the background engine; reconnect if the
+    // service worker restarts.
+    useEffect(() => {
+        if (tabId === null) return;
+        let disposed = false;
+        const connect = () => {
+            if (disposed) return;
+            const port = chrome.runtime.connect({ name: `${PANEL_PORT_PREFIX}${tabId}` });
+            port.onMessage.addListener((message: EngineMessage) => {
+                if (message.type === "state") setSession(message.state);
+                if (message.type === "history") setHistory(message.items);
+            });
+            port.onDisconnect.addListener(() => {
+                portRef.current = null;
+                setTimeout(connect, 300);
+            });
+            portRef.current = port;
+        };
+        connect();
+        const refreshTitle = () => chrome.tabs.get(tabId).then((tab) => setTabTitle(tab.title || "")).catch(() => {});
+        refreshTitle();
+        const onUpdated = (updatedId: number) => {
+            if (updatedId === tabId) refreshTitle();
+        };
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        return () => {
+            disposed = true;
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+            portRef.current?.disconnect();
+        };
+    }, [tabId]);
+
+    const running = !!session?.running;
+    const turns: Turn[] = session?.turns || [];
 
     useEffect(() => {
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-    }, [turns, pending]);
+    }, [session]);
+
+    // Ready to type as soon as the panel opens and after each answer.
+    useEffect(() => {
+        if (!running && view === "chat") inputRef.current?.focus();
+    }, [running, view, settings]);
+
+    const send = (message: PanelMessage) => portRef.current?.postMessage(message);
+
+    const run = (goal: string) => {
+        if (!settings || !goal.trim() || running) return;
+        if (!settings.apiKey) {
+            setView("settings");
+            return;
+        }
+        send({ type: "run", goal: goal.trim() });
+        setInput("");
+    };
 
     const updateSettings = (next: ExtensionSettings) => {
         setSettings(next);
         saveSettings(next);
     };
 
-    const updateTurn = (id: number, patch: (turn: Turn) => Turn) => {
-        setTurns((current) => current.map((turn) => (turn.id === id ? patch(turn) : turn)));
-    };
-
-    const run = useCallback(async (goal: string) => {
-        if (!settings || !goal.trim() || running) return;
-        if (!settings.apiKey) {
-            setView("settings");
-            return;
-        }
-        const id = nextId.current++;
-        const startedAt = Date.now();
-        const history = turns.filter((turn) => turn.answer).map((turn) => ({ user: turn.user, assistant: turn.answer! }));
-        setTurns((current) => [...current, { id, user: goal.trim(), steps: [], startedAt }]);
-        setInput("");
-        setRunning(true);
-        const controller = new AbortController();
-        controllerRef.current = controller;
-        const addStep = (step: Omit<LogStep, "atMs">) => updateTurn(id, (turn) => ({ ...turn, steps: [...turn.steps, { ...step, atMs: Date.now() - startedAt }] }));
-
-        let browser: TabBrowser | null = null;
-        try {
-            const tab = await activeTab();
-            if (!tab?.id) throw new Error("No tab to work in. Open a tab and try again.");
-            // Attaches to the tab only when the task needs the page; Chrome pages
-            // (New Tab, chrome://) are first navigated to the task's website.
-            browser = new TabBrowser(tab.id);
-            const result = await runTask({
-                goal: goal.trim(),
-                config: modelConfigFor(settings),
-                browser,
-                history,
-                signal: controller.signal,
-                confirm: (action, url) => new Promise<boolean>((resolve) => {
-                    setPending({
-                        action,
-                        url,
-                        resolve: (allowed) => {
-                            setPending(null);
-                            addStep({ lane: "note", label: allowed ? "allowed" : "cancelled", detail: action });
-                            resolve(allowed);
-                        },
-                    });
-                }),
-                onEvent: (event: TaskEvent) => {
-                    if (event.type === "step") {
-                        addStep({ lane: event.source, label: ACTION_LABELS[event.action] || event.action, detail: event.detail ? event.detail.slice(0, 120) : undefined });
-                    } else if (event.type === "handoff") {
-                        addStep({ lane: "note", label: "handing to the model", detail: event.reason });
-                    } else if (event.type === "status") {
-                        addStep({ lane: "note", label: event.message.toLowerCase() });
-                    }
-                },
-            });
-            updateTurn(id, (turn) => ({ ...turn, answer: result.answer, mode: result.mode, finishedAt: Date.now(), stats: { jevCalls: result.jevCalls, llmCalls: result.llmCalls } }));
-        } catch (error) {
-            const message = error instanceof TaskCancelledError ? "Stopped." : error instanceof Error ? error.message : String(error);
-            updateTurn(id, (turn) => ({ ...turn, error: message, finishedAt: Date.now() }));
-        } finally {
-            await browser?.detach();
-            controllerRef.current = null;
-            setPending(null);
-            setRunning(false);
-        }
-    }, [settings, running, turns]);
-
-    const stop = () => {
-        controllerRef.current?.abort();
-        pending?.resolve(false);
-    };
-
     if (!settings) return null;
+    if (view === "history") {
+        return (
+            <div className="app">
+                <History
+                    items={history}
+                    currentId={session?.conversationId}
+                    onOpen={(conversationId) => {
+                        send({ type: "open", conversationId });
+                        setView("chat");
+                    }}
+                    onDelete={(conversationId) => send({ type: "delete", conversationId })}
+                    onClearAll={() => send({ type: "clear-history" })}
+                    onClose={() => setView("chat")}
+                />
+            </div>
+        );
+    }
     if (view === "settings") {
         return (
             <div className="app">
@@ -358,8 +372,14 @@ function App() {
                 <div className="brand"><Logo />WebPilot</div>
                 <div className={`target${running ? " locked" : ""}`} title={tabTitle}>
                     <span className="reticle" />
-                    <span>{tabTitle || "No tab"}</span>
+                    <span>{tabTitle || "This tab"}</span>
                 </div>
+                {turns.length > 0 && !running && (
+                    <button className="icon-button" onClick={() => send({ type: "clear" })} aria-label="New conversation" title="New conversation"><ClearIcon /></button>
+                )}
+                {!running && (
+                    <button className="icon-button" onClick={() => { setHistory(null); send({ type: "history" }); setView("history"); }} aria-label="History" title="History"><HistoryIcon /></button>
+                )}
                 <button className="icon-button" onClick={() => setView("settings")} aria-label="Settings"><GearIcon /></button>
             </header>
 
@@ -367,7 +387,7 @@ function App() {
                 {!turns.length && (
                     <div className="empty">
                         <h1>Where to?</h1>
-                        <p className="sub">Ask about this page or anything on the web. WebPilot works in your current tab and asks before anything irreversible.</p>
+                        <p className="sub">Ask about this page or anything on the web. WebPilot works in this tab and asks before anything irreversible.</p>
                         {EXAMPLES.map((example, index) => (
                             <button key={example.text} className="prompt" style={{ animationDelay: `${80 + index * 60}ms` }} onClick={() => run(example.text)}>
                                 {example.text}
@@ -381,14 +401,17 @@ function App() {
                 )}
                 {turns.map((turn) => {
                     const live = running && !turn.finishedAt;
+                    const text = turn.answer || turn.streaming;
                     return (
                         <div className="turn" key={turn.id}>
                             <div className="user-bubble">{turn.user}</div>
                             <FlightLog turn={turn} live={live} />
-                            {live && pending && <ConfirmCard pending={pending} />}
-                            {turn.answer && (
-                                <div className="answer">
-                                    <ReactMarkdown components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{turn.answer}</ReactMarkdown>
+                            {live && session?.pending && (
+                                <ConfirmCard pending={session.pending} onAnswer={(allowed) => send({ type: "confirm", id: session.pending!.id, allowed })} />
+                            )}
+                            {text && (
+                                <div className={`answer${turn.answer ? "" : " streaming"}`}>
+                                    <ReactMarkdown components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noreferrer">{children}</a> }}>{text}</ReactMarkdown>
                                 </div>
                             )}
                             {turn.error && <div className="answer error">{turn.error}</div>}
@@ -400,6 +423,7 @@ function App() {
             <div className="composer">
                 <form className="field-wrap" onSubmit={(event) => { event.preventDefault(); run(input); }}>
                     <textarea
+                        ref={inputRef}
                         rows={1}
                         value={input}
                         placeholder={running ? "Working…" : "Ask WebPilot to do something"}
@@ -409,12 +433,13 @@ function App() {
                                 event.preventDefault();
                                 run(input);
                             }
+                            if (event.key === "Escape" && running) send({ type: "stop" });
                         }}
                         disabled={running}
                         aria-label="Message"
                     />
                     {running ? (
-                        <button type="button" className="send stop" onClick={stop} aria-label="Stop"><StopIcon /></button>
+                        <button type="button" className="send stop" onClick={() => send({ type: "stop" })} aria-label="Stop"><StopIcon /></button>
                     ) : (
                         <button type="submit" className="send" disabled={!input.trim()} aria-label="Send"><SendIcon /></button>
                     )}

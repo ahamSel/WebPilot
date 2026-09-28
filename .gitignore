@@ -63,3 +63,4 @@ next-env.d.ts
 # Screenshots (testing)
 /screenshots
 /extension/dist
+/extension/.dev-bridge-token

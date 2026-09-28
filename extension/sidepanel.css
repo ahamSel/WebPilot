@@ -366,3 +366,41 @@ button { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- history ---------- */
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  border: 1px solid var(--wp-border-soft);
+  border-radius: var(--wp-radius-md);
+  background: var(--wp-surface);
+  animation: rise 0.2s ease-out both;
+}
+.history-item.current { border-color: var(--wp-accent-glow); }
+.history-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  padding: 8px 10px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.history-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.history-open small { display: block; color: var(--wp-text-faint); font-size: 11px; }
+.history-item:hover { border-color: var(--wp-border); }
+
+/* Answer text still streaming in. */
+.answer.streaming > :last-child::after {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--wp-accent);
+  animation: blink 0.9s steps(2) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
