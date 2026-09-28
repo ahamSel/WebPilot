@@ -39,6 +39,9 @@ async function bridgeToken() {
 }
 
 const token = dev ? await bridgeToken() : "";
+// Lets the bridge tell whether a browser picked up this build after a reload.
+const buildId = dev ? new Date().toISOString() : "";
+if (dev) await fs.writeFile(path.join(src, ".dev-build-id"), `${buildId}\n`);
 
 const buildOptions = {
     entryPoints: {
@@ -59,6 +62,7 @@ const buildOptions = {
         "process.env.NODE_ENV": JSON.stringify(watch ? "development" : "production"),
         __DEV_BRIDGE__: JSON.stringify(dev),
         __DEV_BRIDGE_TOKEN__: JSON.stringify(token),
+        __DEV_BUILD_ID__: JSON.stringify(buildId),
     },
     logLevel: "info",
 };
@@ -68,7 +72,9 @@ async function writeManifest() {
     if (dev) {
         manifest.name = "WebPilot (dev)";
         manifest.permissions = [...manifest.permissions, "alarms"];
-        manifest.host_permissions = [...manifest.host_permissions, "http://127.0.0.1/*", "http://localhost/*"];
+        if (!manifest.host_permissions.includes("<all_urls>")) {
+            manifest.host_permissions = [...manifest.host_permissions, "http://127.0.0.1/*", "http://localhost/*"];
+        }
     }
     await fs.writeFile(path.join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 }

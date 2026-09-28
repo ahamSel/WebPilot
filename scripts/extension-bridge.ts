@@ -8,6 +8,10 @@
  *   npx tsx scripts/extension-bridge.ts ping [chrome|edge]
  *   npx tsx scripts/extension-bridge.ts reload [chrome|edge]
  *   npx tsx scripts/extension-bridge.ts run chrome "summarize this page" --url https://example.com
+ *   npx tsx scripts/extension-bridge.ts run chrome "find X on my email" --then "no, it's on gmail"   (a conversation)
+ *   npx tsx scripts/extension-bridge.ts targets chrome https://mail.google.com   (what blocks chrome.debugger there)
+ *   npx tsx scripts/extension-bridge.ts last edge [n]     (the most recent conversation, or the n-th most recent)
+ *   npx tsx scripts/extension-bridge.ts feedback edge [n] (answers the user rated or commented on, with traces)
  *
  * The scenario suite uses it via `npm run bench:fast-mode -- --engine extension --browser chrome`.
  * Requires a dev build (`npm run extension:build:dev`); the shared secret is read
@@ -43,6 +47,7 @@ export interface RunOptions {
     confirm?: "allow" | "deny";
     fastMode?: boolean;
     keepOpen?: boolean;
+    followUps?: string[];
     onEvent?: (event: BridgeEvent) => void;
     timeoutMs?: number;
 }
@@ -64,6 +69,20 @@ export function readBridgeToken(): string {
     const token = fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : "";
     if (!token) throw new Error("No dev bridge token. Build the dev extension first: npm run extension:build:dev");
     return token;
+}
+
+/** The id of the latest dev build (written by build-extension.mjs --dev). */
+export function latestBuildId(): string {
+    const file = path.join(process.cwd(), "extension", ".dev-build-id");
+    return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : "";
+}
+
+/** Warns when a browser is still running an older build than the one on disk. */
+function checkBuild(browser: string, result: BridgeResult): boolean {
+    const latest = latestBuildId();
+    if (!latest || result.build === latest) return true;
+    console.warn(`${browser} is running build ${String(result.build || "(unknown)")}, not the latest (${latest}). Reload WebPilot (dev) at ${browser === "edge" ? "edge" : "chrome"}://extensions.`);
+    return false;
 }
 
 export class ExtensionBridge {
@@ -194,10 +213,22 @@ export class ExtensionBridge {
         return this.send(clientName, { type: "reload" }, undefined, 30_000);
     }
 
+    feedback(clientName: string, limit = 20) {
+        return this.send(clientName, { type: "feedback", limit }, undefined, 60_000);
+    }
+
+    last(clientName: string, index = 0) {
+        return this.send(clientName, { type: "last", index }, undefined, 30_000);
+    }
+
+    targets(clientName: string, url: string) {
+        return this.send(clientName, { type: "targets", url }, undefined, 60_000);
+    }
+
     run(clientName: string, options: RunOptions) {
         return this.send(
             clientName,
-            { type: "run", goal: options.goal, url: options.url, confirm: options.confirm || "deny", fastMode: options.fastMode, keepOpen: options.keepOpen },
+            { type: "run", goal: options.goal, url: options.url, confirm: options.confirm || "deny", fastMode: options.fastMode, keepOpen: options.keepOpen, followUps: options.followUps },
             options.onEvent,
             options.timeoutMs
         );
@@ -217,27 +248,46 @@ async function main() {
     const bridge = await ExtensionBridge.start();
     try {
         await bridge.waitForClient(browser);
-        if (command === "ping") console.log(await bridge.ping(browser));
-        else if (command === "reload") {
+        if (command === "ping") {
+            const result = await bridge.ping(browser);
+            console.log(result);
+            checkBuild(browser, result);
+        } else if (command === "reload") {
             console.log(await bridge.reload(browser));
-            // Wait for the reloaded extension to reconnect.
-            await new Promise((resolve) => setTimeout(resolve, 1500));
-            await bridge.waitForClient(browser);
-            console.log(await bridge.ping(browser));
+            // Wait for the reloaded extension to reconnect with the new build.
+            let result: BridgeResult = {};
+            for (let attempt = 0; attempt < 6; attempt++) {
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+                await bridge.waitForClient(browser);
+                result = await bridge.ping(browser);
+                if (result.build === latestBuildId()) break;
+            }
+            console.log(result);
+            // Chrome sometimes ignores an extension reloading itself.
+            if (!checkBuild(browser, result)) process.exitCode = 2;
+        } else if (command === "feedback") {
+            console.log(JSON.stringify(await bridge.feedback(browser, Number(rest[0]) || 20), null, 2));
+        } else if (command === "last") {
+            console.log(JSON.stringify(await bridge.last(browser, Number(rest[0]) || 0), null, 2));
+        } else if (command === "targets") {
+            console.log(JSON.stringify(await bridge.targets(browser, rest[0]), null, 2));
         } else if (command === "run") {
-            const urlIndex = rest.indexOf("--url");
-            const url = urlIndex >= 0 ? rest[urlIndex + 1] : undefined;
-            const goal = rest.filter((_, index) => index !== urlIndex && index !== urlIndex + 1).join(" ");
+            // run <browser> "request" [--url URL] [--then "follow-up"]... [--keep-open]
+            const valueOf = (flag: string) => rest.flatMap((arg, index) => (arg === flag ? [rest[index + 1]] : []));
+            const url = valueOf("--url")[0];
+            const followUps = valueOf("--then");
+            const goal = rest.filter((arg, index) => !arg.startsWith("--") && !["--url", "--then"].includes(rest[index - 1])).join(" ");
             const started = Date.now();
             const result = await bridge.run(browser, {
                 goal,
                 url,
                 keepOpen: rest.includes("--keep-open"),
+                followUps,
                 onEvent: (event) => console.log(`  [${((Date.now() - started) / 1000).toFixed(1)}s] ${event.type}${"action" in event ? ` ${event.action}` : ""}${"detail" in event && event.detail ? ` ${String(event.detail).slice(0, 100)}` : ""}${"message" in event ? ` ${event.message}` : ""}${"reason" in event ? ` ${event.reason}` : ""}`),
             });
             console.log(JSON.stringify(result, null, 2));
         } else {
-            throw new Error(`Unknown command ${command}. Use ping, reload or run.`);
+            throw new Error(`Unknown command ${command}. Use ping, reload, last, feedback, targets or run.`);
         }
     } finally {
         await bridge.close();

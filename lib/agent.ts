@@ -34,7 +34,7 @@ import {
 import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThreadOnRunStart } from "./threads";
 import { getBrowserToolDeclarations } from "./tool-schema";
 import { extractExplicitUrls } from "./goal-urls";
-import { UNTRUSTED_CONTENT_RULE, confirmationMessage, irreversibleAction } from "./safety";
+import { UNTRUSTED_CONTENT_RULE, confirmationMessage, irreversibleAction, isSecretField } from "./safety";
 import {
     runFastMode,
     summarizeFastModeForPlanner,
@@ -1165,6 +1165,10 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 log("info", "type_start", { ref, textLength: text.length, submit, clear });
 
                 if (!ref) throw new Error("Type requires a ref from the latest observe snapshot");
+                const field = latestObservationSnapshot?.elements.find((candidate) => candidate.ref === ref);
+                if (field && (field.type === "password" || isSecretField({ name: field.label }))) {
+                    throw new Error("WebPilot never types passwords, codes or payment details. Ask the user to fill this in themselves.");
+                }
 
                 // Clear existing content if requested
                 if (clear) {

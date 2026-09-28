@@ -11,15 +11,34 @@
  * conversation a tab shows is kept in chrome.storage.session.
  */
 
-import { TaskCancelledError, runTask, type TaskEvent } from "../../lib/core/run-task";
+import { TaskCancelledError, TaskFailedError, runTask, type TaskEvent } from "../../lib/core/run-task";
 import { loadSettings, modelConfigFor, type ExtensionSettings } from "./settings";
 import { clearConversations, deleteConversation, listConversations, loadConversation, newConversationId, saveConversation } from "./conversations";
-import type { EngineMessage, LogStep, PanelMessage, SessionState, Turn } from "./protocol";
+import type { EngineMessage, LogStep, PanelMessage, SessionState, TraceEntry, Turn } from "./protocol";
 import { TabBrowser } from "./tab-browser";
 
 const TAB_KEY_PREFIX = "webpilot.tab.";
 const KEEPALIVE_MS = 20_000;
 const BROADCAST_THROTTLE_MS = 60;
+const TRACE_LIMIT = 400;
+const TRACE_TEXT_LIMIT = 400;
+
+/** Trace data, with long strings shortened so conversations stay small. */
+function compact(value: unknown, depth = 0): unknown {
+    if (typeof value === "string") return value.length > TRACE_TEXT_LIMIT ? `${value.slice(0, TRACE_TEXT_LIMIT)}…` : value;
+    if (Array.isArray(value)) return depth > 3 ? `[${value.length} items]` : value.slice(0, 20).map((item) => compact(item, depth + 1));
+    if (value && typeof value === "object") {
+        if (depth > 3) return "{…}";
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, compact(item, depth + 1)]));
+    }
+    return value;
+}
+
+function browserName(): string {
+    const brands = (navigator as Navigator & { userAgentData?: { brands?: Array<{ brand: string; version: string }> } }).userAgentData?.brands || [];
+    const brand = brands.find((item) => !/not.?a.?brand|chromium/i.test(item.brand)) || brands.find((item) => /chromium/i.test(item.brand));
+    return brand ? `${brand.brand} ${brand.version}` : navigator.userAgent;
+}
 
 const ACTION_LABELS: Record<string, string> = {
     click: "click",
@@ -100,7 +119,9 @@ export class Engine {
     private broadcast(session: Session, immediate = false) {
         const send = () => {
             session.broadcastTimer = undefined;
-            const message: EngineMessage = { type: "state", state: session.state };
+            // Traces stay in the background and in storage; panels don't need them.
+            const state = { ...session.state, turns: session.state.turns.map(({ trace: _trace, ...turn }) => turn) };
+            const message: EngineMessage = { type: "state", state };
             for (const port of this.ports.get(session.state.tabId) || []) {
                 try {
                     port.postMessage(message);
@@ -148,6 +169,7 @@ export class Engine {
             await deleteConversation(message.conversationId);
             await this.sendHistory(tabId);
         }
+        if (message.type === "feedback") await this.feedback(tabId, message);
         if (message.type === "clear-history") {
             await clearConversations();
             await this.sendHistory(tabId);
@@ -159,7 +181,12 @@ export class Engine {
         if (session.state.running) throw new Error("A task is already running in this tab.");
         const settings = { ...(await loadSettings()), ...hooks.overrides };
         const turn: Turn = { id: newId(), user: goal.trim(), steps: [], startedAt: Date.now() };
-        const history = session.state.turns.filter((item) => item.answer).map((item) => ({ user: item.user, assistant: item.answer!, memory: item.memory }));
+        // Unfinished turns are kept too, so "no, it's on Gmail" or "try again" can pick them up.
+        const history = session.state.turns.filter((item) => item.answer || item.error).map((item) => ({
+            user: item.user,
+            assistant: item.answer || (item.error === "Stopped." ? "(Stopped by the user before finishing.)" : `(This request did not finish: ${item.error})`),
+            memory: item.memory,
+        }));
         session.state = { ...session.state, turns: [...session.state.turns, turn], running: true };
         session.controller = new AbortController();
         this.updateKeepalive();
@@ -174,8 +201,24 @@ export class Engine {
             this.broadcast(session, immediate);
         };
         const addStep = (step: Omit<LogStep, "atMs">) => update((current) => ({ ...current, steps: [...current.steps, { ...step, atMs: Date.now() - turn.startedAt }] }));
+        const trace: TraceEntry[] = [];
+        const addTrace = (kind: string, data?: Record<string, unknown>) => {
+            if (trace.length < TRACE_LIMIT) trace.push({ atMs: Date.now() - turn.startedAt, kind, data: data ? compact(data) as Record<string, unknown> : undefined });
+        };
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        addTrace("run", {
+            extension: chrome.runtime.getManifest().version,
+            browser: browserName(),
+            model: settings.navModel,
+            fastMode: settings.fastMode,
+            startUrl: tab?.url,
+        });
 
-        const browser = new TabBrowser(tabId);
+        const browser = new TabBrowser(tabId, (message) => {
+            hooks.onEvent?.({ type: "status", message });
+            addStep({ lane: "note", label: message.toLowerCase() });
+            addTrace("driver", { mode: "page-scripts", message });
+        });
         try {
             if (!settings.apiKey) throw new Error("Connect OpenRouter in Settings first.");
             const result = await runTask({
@@ -200,8 +243,13 @@ export class Engine {
                     session.confirmResolve = settle;
                     hooks.confirm?.(action, url).then(settle, () => settle(false));
                 }),
+                onTrace: addTrace,
                 onEvent: (event) => {
                     hooks.onEvent?.(event);
+                    if (event.type !== "answer-delta" && event.type !== "answer-reset") {
+                        const { type, ...data } = event;
+                        addTrace(type, type === "done" ? { mode: event.mode } : data);
+                    }
                     if (event.type === "step") {
                         addStep({ lane: event.source, label: ACTION_LABELS[event.action] || event.action, detail: event.detail ? event.detail.slice(0, 140) : undefined });
                     } else if (event.type === "handoff") {
@@ -215,12 +263,16 @@ export class Engine {
                     }
                 },
             });
+            addTrace("result", { mode: result.mode, steps: result.steps, jevCalls: result.jevCalls, llmCalls: result.llmCalls, durationMs: result.durationMs });
             update((current) => ({ ...current, streaming: undefined, answer: result.answer, mode: result.mode, memory: result.memory, finishedAt: Date.now(), stats: { jevCalls: result.jevCalls, llmCalls: result.llmCalls } }), true);
         } catch (error) {
             const message = error instanceof TaskCancelledError ? "Stopped." : error instanceof Error ? error.message : String(error);
-            update((current) => ({ ...current, streaming: undefined, error: message, finishedAt: Date.now() }), true);
+            const memory = error instanceof TaskCancelledError || error instanceof TaskFailedError ? error.memory : undefined;
+            addTrace("error", { name: error instanceof Error ? error.name : "Error", message, stack: error instanceof Error ? error.stack?.split("\n").slice(0, 6).join("\n") : undefined });
+            update((current) => ({ ...current, streaming: undefined, error: message, memory, finishedAt: Date.now() }), true);
         } finally {
             await browser.detach();
+            session.state = { ...session.state, turns: session.state.turns.map((item) => (item.id === turn.id ? { ...item, trace } : item)) };
             session.controller = undefined;
             session.confirmResolve = undefined;
             session.state = { ...session.state, running: false, pending: null };
@@ -229,6 +281,19 @@ export class Engine {
             this.updateKeepalive();
         }
         return session.state.turns.find((item) => item.id === turn.id)!;
+    }
+
+    /** Saves feedback on an answer (the latest finished one by default). */
+    async feedback(tabId: number, message: Extract<PanelMessage, { type: "feedback" }>) {
+        const session = await this.session(tabId);
+        const turns = session.state.turns;
+        const target = message.turnId ? turns.find((item) => item.id === message.turnId) : [...turns].reverse().find((item) => item.finishedAt);
+        if (!target) return;
+        const note = [target.feedback?.note, message.note?.trim()].filter(Boolean).join("\n");
+        const feedback = { rating: message.rating ?? target.feedback?.rating, note: note || undefined, at: Date.now() };
+        session.state = { ...session.state, turns: turns.map((item) => (item.id === target.id ? { ...item, feedback } : item)) };
+        this.broadcast(session, true);
+        this.persist(session);
     }
 
     async stop(tabId: number) {

@@ -22,6 +22,7 @@ export interface CdpTransport {
 const NAVIGATION_START_WINDOW_MS = 400;
 const LOAD_TIMEOUT_MS = 12_000;
 const SETTLE_MS = 250;
+const NAVIGATE_RESPONSE_TIMEOUT_MS = 10_000;
 
 const KEY_CODES: Record<string, { code: string; keyCode: number; text?: string }> = {
     Enter: { code: "Enter", keyCode: 13, text: "\r" },
@@ -79,6 +80,8 @@ export class CdpBrowser implements FastModeBrowser {
             const frame = (params.frame || {}) as { parentId?: string };
             if (method === "Page.frameStartedLoading" || (method === "Page.frameNavigated" && !frame.parentId)) navigating = true;
             if (method === "Page.loadEventFired" || method === "Page.frameStoppedLoading") loaded = true;
+            // The debugger was detached: nothing more will arrive.
+            if (method === "Inspector.detached") navigating = loaded = true;
         });
         try {
             await action();
@@ -177,8 +180,17 @@ export class CdpBrowser implements FastModeBrowser {
 
     async navigate(url: string): Promise<string> {
         await this.withSettle(async () => {
-            const result = await this.transport.send<{ errorText?: string }>("Page.navigate", { url });
-            if (result.errorText) throw new Error(`Navigation to ${url} failed: ${result.errorText}`);
+            // Page.navigate resolves once the site responds; a dead host can take a minute to fail.
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const timeout = new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error(`${url} is not responding.`)), NAVIGATE_RESPONSE_TIMEOUT_MS);
+            });
+            try {
+                const result = await Promise.race([this.transport.send<{ errorText?: string }>("Page.navigate", { url }), timeout]);
+                if (result.errorText) throw new Error(`Navigation to ${url} failed: ${result.errorText}`);
+            } finally {
+                clearTimeout(timer);
+            }
         });
         return "";
     }

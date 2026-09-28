@@ -1,6 +1,6 @@
 import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { runTask, type TaskBrowser } from "../lib/core/run-task";
+import { TaskFailedError, runTask, type TaskBrowser } from "../lib/core/run-task";
 import { resolveRuntimeModelConfig } from "../lib/model-client";
 
 const realFetch = globalThis.fetch;
@@ -64,4 +64,54 @@ test("declining a confirmation ends the task and remembers where it stopped", as
     assert.deepEqual(log, ["navigate https://shop.example/p/tent"], "the Buy button was never clicked");
     assert.match(result.answer, /stopped before clicking button "Buy now"/);
     assert.equal(result.memory.finalUrl, "https://shop.example/p/tent");
+});
+
+test("a guessed start site that doesn't load falls back to a search", async () => {
+    mockServices([
+        { content: "https://dead.example/" },
+        { content: "Trailhead 2P is $89.99." },
+    ]);
+    const log: string[] = [];
+    const browser = fakeBrowser(log);
+    const navigate = browser.navigate;
+    browser.navigate = async (target: string) => {
+        if (target.startsWith("https://dead.example")) {
+            log.push(`navigate ${target} (not responding)`);
+            throw new Error(`${target} is not responding.`);
+        }
+        return navigate(target);
+    };
+    const result = await runTask({
+        goal: "find the price of the trailhead tent",
+        config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
+        browser,
+        confirm: async () => false,
+    });
+
+    assert.equal(log[0], "navigate https://dead.example/ (not responding)");
+    assert.match(log[1], /^navigate https:\/\/www\.google\.com\/search\?q=find%20the%20price/);
+    assert.match(result.answer, /89\.99/);
+});
+
+test("a failed task reports how far it got", async () => {
+    mockServices([]);
+    const log: string[] = [];
+    const browser = fakeBrowser(log);
+    browser.snapshot = async () => {
+        throw new Error("Lost control of the tab (target_closed).");
+    };
+    await assert.rejects(
+        runTask({
+            goal: "buy the tent at https://shop.example/p/tent",
+            config: resolveRuntimeModelConfig({ provider: "openrouter", apiKey: "sk-or-test", fastMode: true }),
+            browser,
+            confirm: async () => false,
+        }),
+        (error: unknown) => {
+            assert.ok(error instanceof TaskFailedError);
+            assert.equal(error.message, "Lost control of the tab (target_closed).");
+            assert.equal(error.memory.finalUrl, "https://shop.example/p/tent");
+            return true;
+        }
+    );
 });

@@ -236,6 +236,21 @@ export async function startRealisticSites({ port = 0 } = {}) {
             return redirect("/mail");
         }
 
+        // ---- student portal: a sign-in page filled in the way a password manager fills it
+        if (url.pathname === "/portal") {
+            return send(200, page("Student portal · Sign in", `<header><span class="logo">Student Portal</span></header>`, `<main><h1>Sign in</h1>
+<form method="post" action="/portal/login">
+<label for="user">Login ID or e-mail address:</label><input id="user" name="user" value="student42" autocomplete="username">
+<label for="pass">Password:</label><input id="pass" name="pass" type="password" value="saved-secret" autocomplete="current-password">
+<div class="actions"><button class="primary" type="submit">LOG IN</button> <a href="/portal/forgot">Forgot password?</a></div>
+</form></main>`));
+        }
+        if (req.method === "POST" && url.pathname === "/portal/login") {
+            const form = await readForm();
+            actions.push({ type: "login", user: form.get("user") || "", passwordUnchanged: form.get("pass") === "saved-secret" });
+            return send(200, page("Student portal", `<header><span class="logo">Student Portal</span></header>`, "<main><h1>Welcome back</h1><p>Your next appointment: Thursday, October 1 at 2:00 PM with the career office.</p></main>"));
+        }
+
         // ---- shop
         if (url.pathname === "/shop") {
             return send(200, page("Northwind Outfitters", shopHeader(cart.length), `<main><h2>Tents</h2><p class="muted">Free shipping over $99.</p>${tentCards(TENTS)}</main>`));

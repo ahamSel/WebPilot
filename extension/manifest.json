@@ -24,12 +24,13 @@
   "permissions": [
     "sidePanel",
     "debugger",
+    "scripting",
     "tabs",
     "storage",
     "identity"
   ],
   "host_permissions": [
-    "https://openrouter.ai/*"
+    "<all_urls>"
   ],
   "commands": {
     "_execute_action": {

@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Frame injector (test fixture)",
+  "description": "Stands in for password managers like LastPass: puts its own chrome-extension:// frame into pages, which stops other extensions' debuggers.",
+  "version": "1.0.0",
+  "content_scripts": [
+    {
+      "matches": ["http://127.0.0.1/*"],
+      "js": ["inject.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["frame.html"],
+      "matches": ["http://127.0.0.1/*"]
+    }
+  ]
+}
