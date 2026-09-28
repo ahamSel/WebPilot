@@ -12,7 +12,7 @@
 
 import { createModelClient, resolveJevConfig, type RuntimeModelConfig, type ToolResponsePart } from "../model-client";
 import { extractExplicitUrls } from "../goal-urls";
-import { DECLINED_OUTCOME, NOTHING_TO_TYPE_OUTCOME, runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult, type FastModeStep } from "../jev/fast-mode";
+import { DECLINED_OUTCOME, NOTHING_TO_TYPE_OUTCOME, SIGN_IN_DECLINED_PREFIX, runFastMode, summarizeFastModeForPlanner, writeFastModeAnswer, type FastModeBrowser, type FastModeResult, type FastModeStep } from "../jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../jev/gates";
 import { describeElement, parsePage, selectCandidates, type PageModel } from "../jev/page";
 import { CREDENTIALS_RULE, UNTRUSTED_CONTENT_RULE, irreversibleAction, isSecretField, signInAction } from "../safety";
@@ -110,6 +110,9 @@ const FAST_ANSWER_ACCEPT = 0.8;
  * article section, so it reads instead of scrolling (fast mode's Jev state stays small).
  */
 const PLANNER_TEXT_CHARS = 8000;
+/** For the planner once the user turns down signing in to a site. */
+const SIGN_IN_DECLINED_GUIDANCE = "Don't try to sign in again or work around it. If some other part of the task doesn't need that site, do it; then answer right away: say what couldn't be done without signing in, and that they can sign in in this tab (or allow it when asked) and ask again.";
+
 /** A delegated sub-goal is short legwork: a search, opening an item, a few pages. */
 const DELEGATE_MAX_STEPS = 10;
 const DELEGATE_TIME_BUDGET_MS = 40_000;
@@ -486,6 +489,7 @@ When an earlier request did not finish, or the user corrects or adds to one ("no
             emit({ type: "handoff", reason: `Fast mode's answer fell short: ${problem}.` });
         } else {
             handoff = summarizeFastModeForPlanner(fast);
+            if (fast.reason.startsWith(SIGN_IN_DECLINED_PREFIX)) handoff += `\n${SIGN_IN_DECLINED_GUIDANCE}`;
             emit({ type: "handoff", reason: fast.reason });
         }
         break;
@@ -555,7 +559,12 @@ Rules:${jev ? `
                         result = { ok: false, error: `The user only asked to find or read information, so WebPilot won't click ${irreversible}: it would change something for them. Carry on without it.` };
                     } else if (risky && !await confirmAction(risky, lastPage.url)) {
                         stepStatus = "declined";
-                        result = { ok: false, error: "The user declined this, so it was not done. Don't try it or anything equivalent again; carry on with any other part of the task, or answer with what was done and what was skipped." };
+                        result = {
+                            ok: false,
+                            error: irreversible
+                                ? "The user declined this, so it was not done. Don't try it or anything equivalent again; carry on with any other part of the task, or answer with what was done and what was skipped."
+                                : `The user chose not to sign in here. ${SIGN_IN_DECLINED_GUIDANCE}`,
+                        };
                     } else {
                         await browser.click(ref, String(args.element || ""));
                         result = { ok: true };
@@ -583,7 +592,9 @@ Rules:${jev ? `
                     lastPage = parsePage(await browser.snapshot(), PLANNER_TEXT_CHARS);
                     result = {
                         ok: delegated.outcome === "done",
-                        outcome: delegated.outcome === "done" ? "Jev finished the sub-goal." : `Jev stopped: ${delegated.reason}`,
+                        outcome: delegated.outcome === "done"
+                            ? "Jev finished the sub-goal."
+                            : `Jev stopped: ${delegated.reason}${delegated.reason.startsWith(SIGN_IN_DECLINED_PREFIX) ? ` ${SIGN_IN_DECLINED_GUIDANCE}` : ""}`,
                         steps: delegated.history.map((entry) => `${entry.action} -> ${entry.outcome}`),
                         page: plannerObservation(lastPage, browserGoal),
                     };

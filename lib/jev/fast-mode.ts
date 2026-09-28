@@ -135,6 +135,17 @@ const DEFAULT_MAX_CONSULTS = 2;
 /** The outcome recorded for a step the user declined; Jev reads it in its history. */
 export const DECLINED_OUTCOME = "declined by the user: not done, and not to be tried again";
 
+/** Starts the handoff reason when the user turned down signing in. */
+export const SIGN_IN_DECLINED_PREFIX = "The user chose not to sign in to";
+
+function hostOf(url: string): string {
+    try {
+        return new URL(url).host;
+    } catch {
+        return url;
+    }
+}
+
 /** The outcome recorded for a field the task gives nothing to type into. */
 export const NOTHING_TO_TYPE_OUTCOME = "skipped: the task gives nothing to type here";
 
@@ -548,7 +559,15 @@ export async function runFastMode(options: FastModeOptions): Promise<FastModeRes
                     if (!options.confirm || (irreversible && options.allowIrreversible === false)) {
                         return finish("handoff", `Next click looks irreversible (${description}); handing to the planner.`, page, step - 1);
                     }
-                    if (!await options.confirm(risky, page.url)) throw new DeclinedByUser(risky);
+                    if (!await options.confirm(risky, page.url)) {
+                        // Nothing behind a sign-in the user turned down can be reached:
+                        // stop working on this site now instead of wandering the sign-in page.
+                        if (!irreversible && signIn) {
+                            history.push({ step, action: actionLabel, outcome: DECLINED_OUTCOME });
+                            return finish("handoff", `${SIGN_IN_DECLINED_PREFIX} ${hostOf(page.url)}.`, page, step - 1);
+                        }
+                        throw new DeclinedByUser(risky);
+                    }
                 }
                 resultText = await options.browser.click(target.ref, description);
             } else if (operation === "type" && target) {

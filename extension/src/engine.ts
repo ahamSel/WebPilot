@@ -238,7 +238,7 @@ export class Engine {
                         settled = true;
                         session.confirmResolve = undefined;
                         session.state = { ...session.state, pending: null };
-                        addStep({ lane: "note", label: allowed ? "allowed" : "cancelled", detail: action });
+                        addStep({ lane: "note", label: allowed ? "allowed" : "skipped", detail: action });
                         resolve(allowed);
                     };
                     session.confirmResolve = settle;
