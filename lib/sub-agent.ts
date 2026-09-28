@@ -30,6 +30,7 @@ import {
 import type { BrowserChannel, BrowserRuntimeSettings } from "./browser-runtime";
 import { getBrowserToolDeclarations } from "./tool-schema";
 import { extractDomainFromGoal, extractUrlFromGoal } from "./goal-urls";
+import { UNTRUSTED_CONTENT_RULE, confirmationMessage, irreversibleAction } from "./safety";
 
 // ============================================================================
 // TYPES
@@ -289,6 +290,18 @@ export class SubAgent {
         const startTime = Date.now();
         if (!ref) throw new Error("Click requires a ref");
 
+        const known = this.latestSnapshot?.elements.find((candidate) => candidate.ref === ref);
+        const risky = irreversibleAction(known ? { role: known.role, label: known.label } : { label: element || "" });
+        if (risky) {
+            this.log("warn", "confirmation_requested", { action: risky, url: this.lastKnownUrl });
+            const allowed = this.config.onSecurityBlock
+                ? await this.config.onSecurityBlock(confirmationMessage(risky, this.lastKnownUrl))
+                : false;
+            if (!allowed) {
+                return { ok: false, error: `Skipped ${risky}: irreversible actions need the user's confirmation.` };
+            }
+        }
+
         await this.mcpCall("browser_click", { ref, element: element || "" });
         await new Promise(r => setTimeout(r, 300));
 
@@ -456,6 +469,8 @@ export class SubAgent {
             const modelClient = createModelClient(this.config.runtime);
 
             const SYSTEM = `You are a fast browser automation agent. Your goal: ${this.config.goal}
+
+${UNTRUSTED_CONTENT_RULE} Irreversible actions (buy, pay, send, delete...) need the user's confirmation; do not attempt them unless the goal clearly asks for them.
 
 Available tools:
 - observe(): Get current page accessibility snapshot with elements identified by ref IDs

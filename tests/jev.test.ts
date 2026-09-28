@@ -310,3 +310,45 @@ test("fast mode does not retry a failing click when the page content keeps chang
     assert.deepEqual(calls, ["click e3", "click e7"]);
     assert.ok(!("click_e3" in (requests[1].body.questions.action.criteria || {})));
 });
+
+test("fast mode clicks an irreversible control only after the user confirms", async () => {
+    mockJev([
+        () => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.05), submit_after_typing: noul(0.5) }),
+    ]);
+    const { browser, calls } = fakeBrowser({ home: HOME }, "home");
+    const asked: string[] = [];
+    const result = await runFastMode({
+        ...fastModeOptions(browser),
+        confirm: async (action) => {
+            asked.push(action);
+            return true;
+        },
+    });
+
+    assert.deepEqual(asked, ["button \"Buy now\""]);
+    assert.deepEqual(calls, ["click e11"]);
+    assert.equal(result.outcome, "done");
+});
+
+test("fast mode stops on a results page when done is likely and no action is confident", async () => {
+    mockJev([
+        () => ({ action: choice("click_e7", { click_e7: 0.2, click_e3: 0.19, scroll_down: 0.18 }), goal_done: noul(0.55), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+    ]);
+    const { browser, calls } = fakeBrowser({ home: HOME }, "home");
+    const result = await runFastMode(fastModeOptions(browser));
+
+    assert.equal(result.outcome, "done");
+    assert.match(result.reason, /likely complete/);
+    assert.deepEqual(calls, []);
+});
+
+test("a confident next action still runs even when done is somewhat likely", async () => {
+    mockJev([
+        () => ({ action: choice("click_e7", { click_e7: 0.9, done: 0.1 }), goal_done: noul(0.55), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
+        () => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.05) }),
+    ]);
+    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
+    await runFastMode(fastModeOptions(browser));
+    assert.deepEqual(calls, ["click e7"]);
+});

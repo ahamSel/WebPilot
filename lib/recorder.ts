@@ -273,6 +273,8 @@ const PUBLIC_LOG_ACTIONS = new Set([
     "coordinator_analyzing",
     "coordinator_failed",
     "coordinator_not_parallel",
+    "confirmation_granted",
+    "confirmation_requested",
     "coordinator_skipped",
     "coordinator_split_response",
     "dispatch_tool",
