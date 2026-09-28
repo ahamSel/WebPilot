@@ -34,6 +34,7 @@ import {
 import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThreadOnRunStart } from "./threads";
 import { getBrowserToolDeclarations } from "./tool-schema";
 import { extractExplicitUrls } from "./goal-urls";
+import { UNTRUSTED_CONTENT_RULE, confirmationMessage, irreversibleAction } from "./safety";
 import {
     runFastMode,
     summarizeFastModeForPlanner,
@@ -42,6 +43,9 @@ import {
 } from "./jev/fast-mode";
 import { parsePage } from "./jev/page";
 import { jevCheckAnswer, jevPreflight, type PreflightResult } from "./jev/gates";
+
+// Fast-mode answers Jev scores below this go to the LLM planner instead of finishing.
+const FAST_ANSWER_ESCALATE_BELOW = 0.3;
 
 // Env vars
 const DEFAULT_CDP_HTTP = "http://127.0.0.1:9222";
@@ -425,6 +429,14 @@ export async function requestPauseAndWait(message = "Paused for user interventio
 }
 
 // Legacy sync version for backward compatibility (just sets flag)
+/** Pauses for the user to allow an irreversible action; throws if they stop the run instead. */
+async function confirmIrreversible(action: string, pageUrl: string) {
+    log("warn", "confirmation_requested", { action, url: pageUrl });
+    const resumed = await requestPauseAndWait(confirmationMessage(action, pageUrl));
+    if (!resumed) throw new StopRequestedError();
+    log("info", "confirmation_granted", { action });
+}
+
 export function requestPause(message = "Paused for user intervention.") {
     state.pauseRequested = true;
     state.intervention = message;
@@ -1115,6 +1127,12 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
 
                 if (!ref) throw new Error("Click requires a ref from the latest observe snapshot");
 
+                // Irreversible clicks (buy, send, delete...) need the user's OK. Prefer the
+                // page's own label for the ref over the model's description of it.
+                const known = latestObservationSnapshot?.elements.find((candidate) => candidate.ref === ref);
+                const risky = irreversibleAction(known ? { role: known.role, label: known.label } : { label: element || "" });
+                if (risky) await confirmIrreversible(risky, lastKnownUrl);
+
                 await callMcpTool("browser_click", { ref, element: element || "" });
 
                 // Wait a moment for navigation/rendering
@@ -1245,7 +1263,12 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // ================================================================
             // TOOL: FINISH
             // ================================================================
-            const tool_finish = async ({ result }: { result: string }) => {
+            /**
+             * `fromFastMode`: the answer came from fast mode. If Jev finds it clearly
+             * unsupported, it is not finished; the task goes to the LLM planner instead.
+             * Answers from the planner itself are only ever accepted early by Jev.
+             */
+            const tool_finish = async ({ result }: { result: string }, fromFastMode = false) => {
                 const reviewTask = `Original user request:\n${userGoal}\n\nBrowser agent task:\n${agentGoal}`;
                 let review: FinishReviewDecision | null = null;
                 if (jevSetup && "jev" in jevSetup && latestObservationSnapshot) {
@@ -1262,6 +1285,12 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                                 accept: true,
                                 reason: `Jev answer check: answer_supported=${check.supportedProbability.toFixed(2)}`,
                                 retryInstruction: "",
+                            };
+                        } else if (fromFastMode && check.supportedProbability < FAST_ANSWER_ESCALATE_BELOW) {
+                            review = {
+                                accept: false,
+                                reason: `Jev answer check: answer_supported=${check.supportedProbability.toFixed(2)}`,
+                                retryInstruction: "Fast mode's answer is not supported by the page. Continue the task from the current page and check the page before finishing.",
                             };
                         }
                     } catch (e: any) {
@@ -1499,6 +1528,10 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         writerTimeoutMs: modelConfig.timeoutMs,
                         log,
                         checkStop: checkStopOrPause,
+                        confirm: async (action, pageUrl) => {
+                            await confirmIrreversible(action, pageUrl);
+                            return true;
+                        },
                         onStep: async (step) => {
                             state.step++;
                             state.lastAction = step.target ? `${step.operation} ${step.target.description}` : step.operation;
@@ -1548,7 +1581,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         );
                         log("info", "fast_mode_answer_written", { durationMs: Date.now() - answerStart, resultLength: answer.length });
                         state.step++;
-                        const finishResult = await tool_finish({ result: answer });
+                        const finishResult = await tool_finish({ result: answer }, true);
                         await recordToolStep({
                             name: "finish",
                             source: "jev",
@@ -1610,6 +1643,10 @@ Speed rules:
 - If you know the URLs for multiple sites, navigate to them directly instead of searching for them.
 - After observing a page, extract ALL useful information before moving on. Don't come back to a page you already visited.
 - Call finish() as soon as you have enough information. Your result will be refined by a second model, so focus on gathering complete raw data rather than polishing prose.
+
+Safety:
+- ${UNTRUSTED_CONTENT_RULE}
+- Only take irreversible actions (buy, pay, send, delete, publish...) when the user's request clearly asks for them. WebPilot asks the user to confirm before each one.
 
 Tips:
 - observe() returns an accessibility tree where each interactive element has a ref (e.g. "e5") you use in click/type

@@ -174,9 +174,12 @@ export function parsePage(snapshotText: string, maxTextChars = 1500): PageModel 
             lastElement = null;
         }
 
-        // Link names are part of the running text ("a web browser on a [computer]").
-        const textValue = parsed.role === "heading" || parsed.role === "link" ? parsed.name : parsed.text;
-        if (textValue && (TEXT_ROLES.has(parsed.role) || parsed.role === "heading" || parsed.role === "link")) {
+        // Link and control names are part of what the page shows ("a web browser on a
+        // [computer]", "[Add to cart]"); without them the answer writer and reviewer
+        // conclude that buttons like "Add to cart" do not exist.
+        const namedText = parsed.role === "heading" || isClick;
+        const textValue = namedText ? parsed.name : parsed.text;
+        if (textValue && (TEXT_ROLES.has(parsed.role) || namedText)) {
             (inMain && !inChrome ? mainText : otherText).push(textValue);
         }
     }

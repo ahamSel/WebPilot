@@ -115,7 +115,7 @@ interface ChatMessage {
 
 const OPENROUTER_APP_URL = "https://github.com/ahamSel/WebPilot";
 const OPENROUTER_APP_TITLE = "WebPilot";
-const RETRYABLE_STATUSES = new Set([429, 502, 503]);
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 10_000;
 
@@ -314,6 +314,12 @@ class ChatCompletionsToolChat implements ToolChat {
             model: this.options.model,
             messages: this.messages,
         };
+        if (this.config.provider === "openrouter") {
+            // Browsing steps are short decisions; low effort keeps reasoning models
+            // (Gemini 3 reasons at "medium" by default) fast. reasoning_details are
+            // still returned so they can be passed back on the next turn.
+            body.reasoning = { effort: "low" };
+        }
         if (this.tools.length) {
             body.tools = this.tools;
             // Ollama rejects tool_choice; "auto" is its default behavior anyway.
@@ -398,8 +404,8 @@ class ChatCompletionsModelClient implements ModelClient {
             model: options.model,
             messages,
         };
-        const effort = reasoningEffortForBudget(options.thinkingBudget);
-        if (effort && this.config.provider === "openrouter") {
+        const effort = reasoningEffortForBudget(options.thinkingBudget) ?? "low";
+        if (this.config.provider === "openrouter") {
             // OpenRouter ignores this for models without reasoning support.
             body.reasoning = { effort, exclude: true };
         }
