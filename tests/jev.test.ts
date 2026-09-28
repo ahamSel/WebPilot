@@ -343,6 +343,25 @@ test("a field the task gives nothing to type into is skipped, and Jev carries on
     assert.ok(!("type_e8" in (requests[1].body.questions.action.criteria || {})), "the field isn't offered again on that page");
 });
 
+test("turning down a sign-in stops work on that site right away", async () => {
+    const login = snapshot("https://portal.example/login", "Sign in", [
+        "- main [ref=e1]:",
+        "  - textbox \"Login ID\" [ref=e2]: student42",
+        "  - textbox \"Password:\" [ref=e3]: ••••••",
+        "  - button \"LOG IN\" [ref=e4] [cursor=pointer]",
+        "  - link \"Forgot password?\" [ref=e5] [cursor=pointer]:",
+        "    - /url: /forgot",
+    ].join("\n"));
+    mockJev([() => ({ action: choice("click_e4"), goal_done: noul(0.05), stuck: noul(0.1), submit_after_typing: noul(0.5) })]);
+    const calls: string[] = [];
+    const browser: FastModeBrowser = { snapshot: async () => login, click: async (ref) => { calls.push(ref); return ""; }, type: async () => "", pressKey: async () => "", back: async () => "" };
+    const result = await runFastMode({ ...fastModeOptions(browser), confirm: async () => false });
+
+    assert.equal(result.outcome, "handoff");
+    assert.match(result.reason, /chose not to sign in to portal\.example/);
+    assert.deepEqual(calls, [], "nothing was clicked, and no wandering around the sign-in page");
+});
+
 test("fast mode hands irreversible clicks to the planner", async () => {
     mockJev([() => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) })]);
     const { browser, calls } = fakeBrowser({ home: HOME }, "home");
