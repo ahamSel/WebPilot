@@ -64,6 +64,8 @@ Optional:
 - `MODEL_NAV_MODEL=...`
 - `MODEL_SYNTH_MODEL=...`
 - `MODEL_SYNTH_ENABLED=1`
+- `WEBPILOT_FAST_MODE=1` (Jev picks browser actions; OpenRouter only)
+- `JEV_MODEL=typesafe/jev-1.13`
 - `RUN_STORE_DIR=./agent_runs`
 - `THREAD_STORE_DIR=./agent_threads`
 - `MAX_STEPS=160`

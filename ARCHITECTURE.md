@@ -61,6 +61,23 @@ Dependabot opens a weekly grouped PR for `playwright` and `playwright-core` (sta
 3. Run one real task (`npm run agent:cli -- "Go to https://example.com and tell me the page heading."`) to confirm the snapshot format still parses.
 4. For releases, run the `Package Desktop` workflow to package and smoke-test the desktop app on every platform.
 
+## Fast Mode (Jev)
+
+Fast mode (`fastMode` in settings, `WEBPILOT_FAST_MODE=1`) puts TypeSafe's Jev decision model in charge of each browser step. Jev returns typed decisions with calibrated probabilities in ~0.3s instead of generating text, so it replaces the LLM wherever the question is really a choice. It is reached through OpenRouter with the same API key (`/api/v1/systemone`, model `typesafe/jev-1.13`, override with `JEV_MODEL`); it is not available with Ollama.
+
+Modules under `lib/jev/`:
+
+- `client.ts`: the decision API (`choice` and `noul` questions, retries, answer parsing).
+- `page.ts`: builds the page state from the accessibility snapshot alone (a numbered list of actionable elements with landmark info, plus a text excerpt). Every Playwright MCP `browser_evaluate` costs ~0.5-1s, so fast mode avoids them. Pages with more than ~250 elements are trimmed to the ones in main content that share words with the task.
+- `fast-mode.ts`: the step loop. One Jev call per step asks a flat `action` choice (`click_<ref>`, `type_<ref>`, scroll, back, done, blocked) plus `goal_done`, `stuck` and `submit_after_typing`. The LLM only writes text for inputs and phrases the final answer.
+- `gates.ts`: Jev yes/no gates in front of LLM calls. A preflight asks "needs the browser?" and "independent sites in parallel?" in one call, skipping the LLM router and split analysis when Jev is confident. An answer check accepts a supported final answer without the LLM reviewer; Jev never rejects on its own.
+
+Control returns to the LLM planner (with a summary of the steps taken) when Jev reports the task blocked or stuck, several actions in a row make no visible change, the next click looks irreversible (buy, pay, delete, send...), there is no starting page, or the step/time budget runs out. Actions that made no change are removed from the options before Jev decides again.
+
+Each Jev step is recorded with `source: "jev"`, and `stepN_jev.json` artifacts keep Jev's probabilities for tuning thresholds. `npm run bench:fast-mode` compares fast mode with the LLM-only agent on the same tasks.
+
+Privacy: in fast mode the page text excerpt, element labels and URLs of every step are sent to TypeSafe (through OpenRouter).
+
 ## Tool Schema Versioning
 
 The agent exposes a stable WebPilot browser tool schema from `lib/tool-schema.ts` instead of scattering raw provider payloads through the runtime. The current schema version is `webpilot.browser-tools.v1`.

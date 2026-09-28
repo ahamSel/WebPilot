@@ -36,6 +36,8 @@ export interface RuntimeSettings {
     synthModel: string;
     reviewModel: string;
     synthEnabled: boolean;
+    /** Fast mode: Jev picks each browser action (OpenRouter only). */
+    fastMode: boolean;
     browser: BrowserRuntimeSettings;
 }
 
@@ -78,6 +80,7 @@ export const DEFAULT_RUNTIME_SETTINGS: RuntimeSettings = {
     baseUrl: defaultBaseUrlForProvider("openrouter"),
     ...defaultModelsForProvider("openrouter"),
     synthEnabled: true,
+    fastMode: false,
     browser: DEFAULT_BROWSER_RUNTIME_SETTINGS,
 };
 
@@ -120,7 +123,7 @@ function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
     // Gemini/OpenAI/Claude settings migrate to OpenRouter defaults; their keys
     // and model ids are not valid there.
     const input: Partial<RuntimeSettings> = isLegacyProvider(raw.provider)
-        ? { synthEnabled: raw.synthEnabled, browser: raw.browser }
+        ? { synthEnabled: raw.synthEnabled, fastMode: raw.fastMode, browser: raw.browser }
         : raw;
     const provider = normalizeProvider(input.provider);
     const modelDefaults = defaultModelsForProvider(provider);
@@ -132,6 +135,7 @@ function normalizeRuntimeSettings(value: unknown): RuntimeSettings {
         synthModel: typeof input.synthModel === "string" && input.synthModel.trim() ? input.synthModel.trim() : modelDefaults.synthModel,
         reviewModel: typeof input.reviewModel === "string" && input.reviewModel.trim() ? input.reviewModel.trim() : modelDefaults.reviewModel,
         synthEnabled: typeof input.synthEnabled === "boolean" ? input.synthEnabled : DEFAULT_RUNTIME_SETTINGS.synthEnabled,
+        fastMode: typeof input.fastMode === "boolean" ? input.fastMode : DEFAULT_RUNTIME_SETTINGS.fastMode,
         browser: sanitizeBrowserRuntimeSettings((input as { browser?: unknown }).browser),
     };
 }
@@ -352,6 +356,7 @@ export function buildRuntimeOverrides(runtime: RuntimeSettings): Record<string, 
         synthModel: runtime.synthModel.trim(),
         reviewModel: runtime.reviewModel.trim(),
         synthEnabled: runtime.synthEnabled,
+        fastMode: runtime.fastMode,
     };
     if (runtime.apiKey.trim()) {
         payload.apiKey = runtime.apiKey.trim();

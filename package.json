@@ -20,6 +20,7 @@
     "mcp:cli": "node scripts/mcp-cli.js",
     "agent:cli": "node scripts/agent-runner.js",
     "agent:e2e": "node scripts/agent-e2e.js",
+    "bench:fast-mode": "tsx scripts/bench-fast-mode.ts",
     "browser:smoke": "node scripts/browser-smoke.mjs",
     "browsers:install": "node scripts/prepare-playwright-browsers.mjs",
     "desktop:dev": "node scripts/electron-dev.mjs",

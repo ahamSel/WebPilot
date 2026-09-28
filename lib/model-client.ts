@@ -1,3 +1,4 @@
+import { DEFAULT_JEV_MODEL, type JevClientConfig } from "./jev/client";
 import {
     defaultBaseUrlForProvider,
     defaultModelsForProvider,
@@ -21,6 +22,9 @@ export interface RuntimeModelOverrides {
     synthModel?: string;
     reviewModel?: string;
     synthEnabled?: boolean;
+    /** Fast mode: Jev picks each browser action; the LLM only writes text. */
+    fastMode?: boolean;
+    jevModel?: string;
     timeoutMs?: number;
     browser?: BrowserRuntimeOverrides;
 }
@@ -34,6 +38,8 @@ export interface RuntimeModelConfig {
     synthModel: string;
     reviewModel: string;
     synthEnabled: boolean;
+    fastMode: boolean;
+    jevModel: string;
     timeoutMs: number;
 }
 
@@ -44,6 +50,8 @@ export interface RuntimeModelSummary {
     synthModel: string;
     reviewModel: string;
     synthEnabled: boolean;
+    fastMode: boolean;
+    jevModel?: string;
     baseUrl?: string;
     hasApiKey: boolean;
 }
@@ -464,6 +472,8 @@ export function resolveRuntimeModelConfig(overrides: RuntimeModelOverrides = {})
             overrides.synthEnabled ?? process.env.MODEL_SYNTH_ENABLED,
             true
         ),
+        fastMode: boolFromInput(overrides.fastMode ?? process.env.WEBPILOT_FAST_MODE, false),
+        jevModel: String(optionalTrimmedString(overrides.jevModel) || optionalTrimmedString(process.env.JEV_MODEL) || DEFAULT_JEV_MODEL),
         timeoutMs: toTimeoutMs(
             overrides.timeoutMs ?? process.env.MODEL_TIMEOUT_MS,
             120000
@@ -479,6 +489,8 @@ export function getRuntimeModelSummary(config: RuntimeModelConfig): RuntimeModel
         synthModel: config.synthModel,
         reviewModel: config.reviewModel,
         synthEnabled: config.synthEnabled,
+        fastMode: config.fastMode,
+        jevModel: config.fastMode ? config.jevModel : undefined,
         baseUrl: config.baseUrl || undefined,
         hasApiKey: !!config.apiKey,
     };
@@ -495,6 +507,25 @@ export function missingCredentialsMessage(config: RuntimeModelConfig): string {
     return config.provider === "openrouter"
         ? "Missing OpenRouter API key. Add one in Settings."
         : "Missing Ollama base URL. Check the Ollama settings.";
+}
+
+/**
+ * Jev is reached through OpenRouter with the same key as the chat models.
+ * Returns why fast mode cannot run when it is unavailable.
+ */
+export function resolveJevConfig(config: RuntimeModelConfig): { jev: JevClientConfig } | { unavailable: string } {
+    if (config.provider !== "openrouter") {
+        return { unavailable: "Fast mode needs OpenRouter; Jev is not available for local Ollama models." };
+    }
+    if (!config.apiKey) return { unavailable: "Fast mode needs an OpenRouter API key." };
+    return {
+        jev: {
+            apiKey: config.apiKey,
+            baseUrl: config.baseUrl,
+            model: config.jevModel,
+            timeoutMs: Math.min(config.timeoutMs, 20_000),
+        },
+    };
 }
 
 export function createModelClient(config: RuntimeModelConfig): ModelClient {

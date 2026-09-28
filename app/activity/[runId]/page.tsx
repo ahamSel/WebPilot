@@ -135,6 +135,8 @@ const PERFORMANCE_LABELS: Record<string, string> = {
     synthDurationMs: "Synth time",
     coordinatorCallCount: "Coordinator calls",
     coordinatorDurationMs: "Coordinator time",
+    jevCallCount: "Jev decisions",
+    jevDurationMs: "Jev time",
 };
 
 function formatSize(sizeBytes?: number) {

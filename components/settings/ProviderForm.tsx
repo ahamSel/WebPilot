@@ -502,6 +502,20 @@ export function ProviderForm() {
         label="Synthesis enabled"
       />
 
+      {provider === "openrouter" && (
+        <div className="min-w-0 space-y-1">
+          <Toggle
+            checked={runtime.fastMode === true}
+            onChange={(v) => update({ fastMode: v })}
+            label="Fast mode (Jev)"
+          />
+          <p className="text-[12px] leading-snug text-wp-text-secondary">
+            Jev, a fast decision model on OpenRouter, picks each browser action in about 0.3s and the navigation model only writes text.
+            It falls back to the normal planner when stuck. Page text and element labels are sent to TypeSafe for each step.
+          </p>
+        </div>
+      )}
+
       <div className="min-w-0 space-y-3 rounded-[var(--wp-radius)] border border-wp-border bg-wp-surface/30 p-3">
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <label className="text-xs font-medium text-wp-text-secondary uppercase tracking-wider">

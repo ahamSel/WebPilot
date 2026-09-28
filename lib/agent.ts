@@ -19,6 +19,7 @@ import {
     getRuntimeModelSummary,
     hasRuntimeCredentials,
     missingCredentialsMessage,
+    resolveJevConfig,
     resolveRuntimeModelConfig,
     type RuntimeModelConfig,
     type RuntimeModelOverrides,
@@ -33,6 +34,14 @@ import {
 import { buildThreadContext, ensureThread, updateThreadOnRunFinish, updateThreadOnRunStart } from "./threads";
 import { getBrowserToolDeclarations } from "./tool-schema";
 import { extractExplicitUrls } from "./goal-urls";
+import {
+    runFastMode,
+    summarizeFastModeForPlanner,
+    writeFastModeAnswer,
+    type FastModeBrowser,
+} from "./jev/fast-mode";
+import { parsePage } from "./jev/page";
+import { jevCheckAnswer, jevPreflight, type PreflightResult } from "./jev/gates";
 
 // Env vars
 const DEFAULT_CDP_HTTP = "http://127.0.0.1:9222";
@@ -70,6 +79,8 @@ export interface PerformanceSummary {
     synthDurationMs: number;
     coordinatorCallCount: number;
     coordinatorDurationMs: number;
+    jevCallCount: number;
+    jevDurationMs: number;
 }
 
 export interface AgentState {
@@ -196,9 +207,21 @@ function buildPerformanceSummary(logs: LogEntry[], stepCount: number, wallClockM
     let synthDurationMs = 0;
     let coordinatorCallCount = 0;
     let coordinatorDurationMs = 0;
+    let jevCallCount = 0;
+    let jevDurationMs = 0;
 
     for (const entry of logs) {
         const durationMs = logDurationMs(entry);
+        if (entry.action === "jev_decision") {
+            jevCallCount += 1;
+            jevDurationMs += durationMs;
+            continue;
+        }
+        if (entry.action === "fast_mode_text_written" || entry.action === "fast_mode_start_url" || entry.action === "fast_mode_answer_written") {
+            llmCallCount += 1;
+            llmDurationMs += durationMs;
+            continue;
+        }
         if (routeActions.has(entry.action)) {
             llmCallCount += 1;
             llmDurationMs += durationMs;
@@ -237,6 +260,8 @@ function buildPerformanceSummary(logs: LogEntry[], stepCount: number, wallClockM
         synthDurationMs,
         coordinatorCallCount,
         coordinatorDurationMs,
+        jevCallCount,
+        jevDurationMs,
     };
 }
 
@@ -894,7 +919,40 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             if (runCtx && plannerThreadContext) {
                 await saveTextArtifact(runCtx, "thread_context.txt", plannerThreadContext);
             }
-            const routeDecision = await routeUserRequest(userGoal, modelConfig, plannerThreadContext);
+            const jevSetup = modelConfig.fastMode ? resolveJevConfig(modelConfig) : null;
+            const fastModeEnabled = !!jevSetup && "jev" in jevSetup;
+            if (jevSetup && "unavailable" in jevSetup) {
+                log("warn", "fast_mode_unavailable", { reason: jevSetup.unavailable });
+            }
+
+            // Fast mode: one Jev call answers "needs the browser?" and "split across
+            // sites?" before any LLM call; the LLM router/coordinator only run when
+            // Jev is not confident.
+            let preflight: PreflightResult | null = null;
+            if (jevSetup && "jev" in jevSetup) {
+                try {
+                    preflight = await jevPreflight(jevSetup.jev, userGoal, plannerThreadContext);
+                    log("info", "jev_decision", {
+                        gate: "preflight",
+                        needsBrowser: Number(preflight.needsBrowserProbability.toFixed(3)),
+                        parallel: Number(preflight.parallelProbability.toFixed(3)),
+                        durationMs: preflight.latencyMs,
+                    });
+                } catch (e: any) {
+                    log("warn", "jev_preflight_failed", { error: shortErr(e) });
+                }
+            }
+
+            // Follow-ups ("now do the same for Firefox") need the LLM router to turn
+            // the message into a complete browser task, so the shortcut is first-turn only.
+            const routeDecision: RequestRouteDecision = preflight?.browse && !plannerThreadContext
+                ? {
+                    mode: "browse",
+                    assistantReply: "",
+                    browserGoal: userGoal,
+                    reason: `Jev preflight: needs_browser=${preflight.needsBrowserProbability.toFixed(2)}`,
+                }
+                : await routeUserRequest(userGoal, modelConfig, plannerThreadContext);
             if (runCtx) {
                 await saveTextArtifact(runCtx, "request_route.json", JSON.stringify({
                     routedAt: nowIso(),
@@ -921,7 +979,11 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // COORDINATOR: LLM decides whether goal can be parallelized
             // ================================================================
             let parallelResult: ParallelResult | null = null;
-            parallelResult = await tryParallelExecution(agentGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
+            if (preflight?.parallel === false) {
+                log("info", "coordinator_skipped", { reason: `Jev preflight: parallel_sites=${preflight.parallelProbability.toFixed(2)}` });
+            } else {
+                parallelResult = await tryParallelExecution(agentGoal, runCtx!, modelConfig, plannerThreadContext, browserSettings);
+            }
             if (parallelResult) {
                 // Parallel execution handled everything
                 state.finalResult = parallelResult.result;
@@ -1184,8 +1246,30 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
             // TOOL: FINISH
             // ================================================================
             const tool_finish = async ({ result }: { result: string }) => {
-                const review = await reviewFinishResult(
-                    `Original user request:\n${userGoal}\n\nBrowser agent task:\n${agentGoal}`,
+                const reviewTask = `Original user request:\n${userGoal}\n\nBrowser agent task:\n${agentGoal}`;
+                let review: FinishReviewDecision | null = null;
+                if (jevSetup && "jev" in jevSetup && latestObservationSnapshot) {
+                    const observed: NormalizedSnapshot = latestObservationSnapshot;
+                    try {
+                        const check = await jevCheckAnswer(jevSetup.jev, reviewTask, result, observed.url, observed.text || "");
+                        log("info", "jev_decision", {
+                            gate: "answer_check",
+                            supported: Number(check.supportedProbability.toFixed(3)),
+                            durationMs: check.latencyMs,
+                        });
+                        if (check.accept) {
+                            review = {
+                                accept: true,
+                                reason: `Jev answer check: answer_supported=${check.supportedProbability.toFixed(2)}`,
+                                retryInstruction: "",
+                            };
+                        }
+                    } catch (e: any) {
+                        log("warn", "jev_answer_check_failed", { error: shortErr(e) });
+                    }
+                }
+                review ??= await reviewFinishResult(
+                    reviewTask,
                     result,
                     latestObservationSnapshot,
                     modelConfig,
@@ -1282,7 +1366,7 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                 preUrl,
             }: {
                 name: string;
-                source: "llm" | "seed" | "direct";
+                source: "llm" | "seed" | "direct" | "jev";
                 args: Record<string, unknown>;
                 result: unknown;
                 durationMs?: number;
@@ -1336,9 +1420,152 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         preUrl: navigatePreUrl,
                     });
 
+                    // Fast mode reads the page from the accessibility snapshot itself;
+                    // the full observe (two ~1s page evaluations) is only for the planner.
+                    if (!fastModeEnabled) {
+                        state.step++;
+                        const observePreUrl = lastKnownUrl || undefined;
+                        const observeArgs = { maxTextChars: 2800, maxElements: 50 };
+                        const observeStart = Date.now();
+                        initialObservation = await tool_observe(observeArgs);
+                        await recordToolStep({
+                            name: "observe",
+                            source: "seed",
+                            args: observeArgs,
+                            result: initialObservation,
+                            durationMs: Date.now() - observeStart,
+                            preUrl: observePreUrl,
+                        });
+                    }
+                } catch (e: any) {
+                    log("warn", "goal_seed_navigation_failed", { error: shortErr(e) });
+                }
+            }
+
+            // ================================================================
+            // FAST MODE: Jev picks actions, the LLM only writes text
+            // ================================================================
+            let fastModeHandoff = "";
+            if (jevSetup && "jev" in jevSetup) {
+                const writer = createModelClient(modelConfig);
+                const snapshotText = async () => mcpText(await callMcpTool("browser_snapshot", {}));
+                const fastBrowser: FastModeBrowser = {
+                    snapshot: snapshotText,
+                    click: async (ref, element) => mcpText(await callMcpTool("browser_click", { ref, element })),
+                    type: async (ref, element, text, submit) => mcpText(await callMcpTool("browser_type", { ref, element, text, submit, slowly: false })),
+                    pressKey: async (key) => mcpText(await callMcpTool("browser_press_key", { key })),
+                    back: async () => mcpText(await callMcpTool("browser_navigate_back", {})),
+                };
+
+                // Jev can only act on the page in front of it, so give it a starting page.
+                if (!goalUrl && !/^https?:/i.test(lastKnownUrl)) {
+                    const startUrlStart = Date.now();
+                    try {
+                        const suggestion = await withTimeout(
+                            writer.generateText({
+                                model: modelConfig.navModel,
+                                systemInstruction: "You pick the starting web page for a browser automation task. Reply with one absolute https URL and nothing else.",
+                                prompt: `Task: ${agentGoal}\n\nBest page to start from (a site's home or search page is fine):`,
+                            }),
+                            modelConfig.timeoutMs,
+                            "Fast mode start URL"
+                        );
+                        const startUrl = extractExplicitUrls(suggestion)[0] || "";
+                        log("info", "fast_mode_start_url", { url: startUrl || undefined, durationMs: Date.now() - startUrlStart });
+                        if (startUrl) {
+                            state.step++;
+                            const navigateResult = await tool_navigate({ url: startUrl });
+                            await recordToolStep({
+                                name: "navigate",
+                                source: "jev",
+                                args: { url: startUrl },
+                                result: navigateResult,
+                                durationMs: Date.now() - startUrlStart,
+                            });
+                        }
+                    } catch (e: any) {
+                        log("warn", "fast_mode_start_url_failed", { error: shortErr(e) });
+                    }
+                }
+
+                if (/^https?:/i.test(lastKnownUrl)) {
+                    log("info", "fast_mode_started", { jevModel: jevSetup.jev.model, url: lastKnownUrl });
+                    const fast = await runFastMode({
+                        task: agentGoal,
+                        jev: jevSetup.jev,
+                        browser: fastBrowser,
+                        writer,
+                        writerModel: modelConfig.navModel,
+                        writerTimeoutMs: modelConfig.timeoutMs,
+                        log,
+                        checkStop: checkStopOrPause,
+                        onStep: async (step) => {
+                            state.step++;
+                            state.lastAction = step.target ? `${step.operation} ${step.target.description}` : step.operation;
+                            lastKnownUrl = step.page.url || lastKnownUrl;
+                            await recordToolStep({
+                                name: step.operation === "scroll_down" || step.operation === "scroll_up" ? "scroll" : step.operation,
+                                source: "jev",
+                                args: {
+                                    ...(step.target ? { ref: step.target.ref, element: step.target.description } : {}),
+                                    ...(step.text !== undefined ? { text: step.text, submit: step.submit } : {}),
+                                    ...(step.operation.startsWith("scroll") ? { direction: step.operation === "scroll_down" ? "down" : "up" } : {}),
+                                },
+                                result: { ok: step.ok, error: step.error, url: step.page.url, title: step.page.title },
+                                durationMs: step.durationMs,
+                                preUrl: step.preUrl,
+                            });
+                            if (runCtx) {
+                                await saveTextArtifact(runCtx, `step${state.step}_jev.json`, JSON.stringify({
+                                    operation: step.operation,
+                                    target: step.target,
+                                    outcome: step.outcome,
+                                    model: step.decision.model,
+                                    latencyMs: step.decision.latencyMs,
+                                    answers: step.decision.answers,
+                                }, null, 2));
+                            }
+                        },
+                    });
+                    for (const visited of fast.pages) {
+                        pageSummaries.push({ url: visited.url, title: visited.title, textSnippet: visited.text });
+                    }
+
+                    if (fast.outcome === "done") {
+                        const finalPage = parsePage(await snapshotText(), 12000);
+                        latestObservationSnapshot = {
+                            url: finalPage.url,
+                            title: finalPage.title,
+                            text: finalPage.text,
+                            elements: [],
+                            evidence: { dueMentions: [], keyLines: [], instructionBlocks: [] },
+                        };
+                        const answerStart = Date.now();
+                        const answer = await withTimeout(
+                            writeFastModeAnswer(writer, modelConfig.navModel, agentGoal, fast, finalPage.text),
+                            modelConfig.timeoutMs,
+                            "Fast mode answer"
+                        );
+                        log("info", "fast_mode_answer_written", { durationMs: Date.now() - answerStart, resultLength: answer.length });
+                        state.step++;
+                        const finishResult = await tool_finish({ result: answer });
+                        await recordToolStep({
+                            name: "finish",
+                            source: "jev",
+                            args: { result: answer },
+                            result: finishResult,
+                            durationMs: Date.now() - answerStart,
+                            preUrl: lastKnownUrl || undefined,
+                        });
+                        if (finishResult.ok) return;
+                        fastModeHandoff = `${summarizeFastModeForPlanner(fast)}\nFast mode proposed this answer, but review rejected it: ${finishResult.error || "unsupported by the page"}\nProposed answer: ${answer.slice(0, 1000)}`;
+                    } else {
+                        fastModeHandoff = summarizeFastModeForPlanner(fast);
+                    }
+
+                    // The planner needs element refs and page evidence for the current page.
                     state.step++;
-                    const observePreUrl = lastKnownUrl || undefined;
-                    const observeArgs = { maxTextChars: 2800, maxElements: 50 };
+                    const observeArgs = { maxTextChars: 2800, maxElements: 80 };
                     const observeStart = Date.now();
                     initialObservation = await tool_observe(observeArgs);
                     await recordToolStep({
@@ -1347,10 +1574,10 @@ export async function startAgent(goal: string, runtimeOverrides: RuntimeModelOve
                         args: observeArgs,
                         result: initialObservation,
                         durationMs: Date.now() - observeStart,
-                        preUrl: observePreUrl,
+                        preUrl: lastKnownUrl || undefined,
                     });
-                } catch (e: any) {
-                    log("warn", "goal_seed_navigation_failed", { error: shortErr(e) });
+                } else {
+                    log("warn", "fast_mode_handoff", { reason: "No starting page for fast mode." });
                 }
             }
 
@@ -1418,7 +1645,7 @@ Tips:
                     : "";
                 response = await withTimeout(
                     chat.sendMessage(
-                        `Start.\nCurrent request: ${agentGoal}\nOriginal user request: ${userGoal}\n${plannerThreadContext ? `${plannerThreadContext}\n` : ""}${initialObservationText}`
+                        `Start.\nCurrent request: ${agentGoal}\nOriginal user request: ${userGoal}\n${plannerThreadContext ? `${plannerThreadContext}\n` : ""}${fastModeHandoff ? `${fastModeHandoff}\n` : ""}${initialObservationText}`
                     ),
                     modelConfig.timeoutMs,
                     "Initial planner call"
