@@ -3,9 +3,8 @@
 import { CdpBrowser } from "../../lib/cdp/driver";
 import type { TaskBrowser } from "../../lib/core/run-task";
 import { DebuggerTransport, isDebuggerBlocked, isRestrictedUrl } from "./debugger-transport";
-import { DomBrowser } from "./dom-browser";
+import { DomBrowser, waitForPageReady } from "./dom-browser";
 
-const TAB_LOAD_TIMEOUT_MS = 15_000;
 /** A site that hasn't started responding by then is treated as down. */
 const COMMIT_TIMEOUT_MS = 8_000;
 const RESTRICTED_MESSAGE = "This tab shows a Chrome page that extensions can't control. Mention a website to open, or switch to a regular web page.";
@@ -13,22 +12,6 @@ const CANCELLED_MESSAGE = "Browser control was cancelled from Chrome's debugging
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Resolves once the tab finishes loading (or after a timeout). */
-function waitForTabLoad(tabId: number): Promise<void> {
-    return new Promise((resolve) => {
-        const done = () => {
-            clearTimeout(timer);
-            chrome.tabs.onUpdated.removeListener(listener);
-            resolve();
-        };
-        const listener = (updatedId: number, change: { status?: string }) => {
-            if (updatedId === tabId && change.status === "complete") done();
-        };
-        const timer = setTimeout(done, TAB_LOAD_TIMEOUT_MS);
-        chrome.tabs.onUpdated.addListener(listener);
-    });
 }
 
 /**
@@ -41,7 +24,7 @@ async function waitForSite(tabId: number): Promise<boolean> {
         const tab = await chrome.tabs.get(tabId).catch(() => null);
         if (!tab) return false;
         if (!isRestrictedUrl(tab.url)) {
-            if (tab.status === "loading") await waitForTabLoad(tabId);
+            if (tab.status === "loading") await waitForPageReady(tabId);
             return true;
         }
         await sleep(100);
@@ -98,7 +81,7 @@ export class TabBrowser implements TaskBrowser {
         await this.dropTransport();
         const tab = await this.tab();
         if (isRestrictedUrl(tab.url)) throw new Error(RESTRICTED_MESSAGE);
-        if (tab.status === "loading") await waitForTabLoad(this.tabId);
+        if (tab.status === "loading") await waitForPageReady(this.tabId);
         try {
             this.transport = await DebuggerTransport.attach(this.tabId);
             this.cdp = new CdpBrowser(this.transport);
@@ -137,7 +120,7 @@ export class TabBrowser implements TaskBrowser {
             transport.detachedReason = lostControl;
             if (changesPage && transport.actionsSent > actionsBefore) {
                 const tab = await this.tab();
-                if (tab.status === "loading") await waitForTabLoad(this.tabId);
+                if (tab.status === "loading") await waitForPageReady(this.tabId);
                 return fallback;
             }
             return operation(await this.driver());

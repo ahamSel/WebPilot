@@ -269,6 +269,12 @@ export function selectCandidates(elements: PageElement[], taskText: string, limi
     }
     if (unique.length <= limit) return { selected: unique, truncated: false };
 
+    const selected = rankByRelevance(unique, taskText).slice(0, limit).sort((left, right) => left.index - right.index);
+    return { selected, truncated: true };
+}
+
+/** Elements ordered by how much they match the task (words in their name or link), page order breaking ties. */
+export function rankByRelevance(elements: PageElement[], taskText: string): PageElement[] {
     const taskTokens = tokens(taskText);
     const score = (element: PageElement) => {
         let value = element.chrome ? 0 : 1;
@@ -277,11 +283,8 @@ export function selectCandidates(elements: PageElement[], taskText: string, limi
         }
         return value;
     };
-    const selected = unique
+    return elements
         .map((element) => ({ element, score: score(element) }))
         .sort((left, right) => right.score - left.score || left.element.index - right.element.index)
-        .slice(0, limit)
-        .map((entry) => entry.element)
-        .sort((left, right) => left.index - right.index);
-    return { selected, truncated: true };
+        .map((entry) => entry.element);
 }

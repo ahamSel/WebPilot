@@ -1,6 +1,6 @@
 /// <reference types="chrome" />
 
-import { STALE_PAGE_MESSAGE } from "../../lib/cdp/driver";
+import { AFTER_DOM_READY_MS, STALE_PAGE_MESSAGE } from "../../lib/cdp/driver";
 import { axTreeToSnapshot } from "../../lib/cdp/snapshot";
 import type { TaskBrowser } from "../../lib/core/run-task";
 import { clickElement, pressKeyInPage, readPageText, snapshotPage, typeIntoElement, waitForQuiet } from "./page-scripts";
@@ -17,6 +17,27 @@ const SETTLE_MS = 150;
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolves once the tab's page is usable: fully loaded, or its DOM has been
+ * ready for a moment (heavy sites keep loading ads and trackers long after).
+ */
+export async function waitForPageReady(tabId: number, maxMs = LOAD_TIMEOUT_MS): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    let domReadyAt = 0;
+    while (Date.now() < deadline) {
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!tab || tab.status === "complete") return;
+        if (domReadyAt) {
+            if (Date.now() - domReadyAt > AFTER_DOM_READY_MS) return;
+        } else if (!tab.pendingUrl) {
+            // Only once the new document has committed, or this would read the old one.
+            const results = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.readyState }).catch(() => []);
+            if (results?.[0]?.result && results[0].result !== "loading") domReadyAt = Date.now();
+        }
+        await sleep(150);
+    }
 }
 
 function refId(ref: string): number {
@@ -47,8 +68,7 @@ export class DomBrowser implements TaskBrowser {
     private async ensureSnapshotCurrent() {
         const tab = await chrome.tabs.get(this.tabId);
         if (tab.status !== "loading" && (!this.snapshotUrl || tab.url === this.snapshotUrl)) return;
-        const deadline = Date.now() + LOAD_TIMEOUT_MS;
-        while (Date.now() < deadline && (await chrome.tabs.get(this.tabId)).status === "loading") await sleep(50);
+        await waitForPageReady(this.tabId);
         await sleep(SETTLE_MS);
         throw new Error(STALE_PAGE_MESSAGE);
     }
@@ -86,8 +106,7 @@ export class DomBrowser implements TaskBrowser {
             const windowEnd = Date.now() + NAVIGATION_START_WINDOW_MS;
             while (!loading && Date.now() < windowEnd) await sleep(30);
             if (loading) {
-                const deadline = Date.now() + LOAD_TIMEOUT_MS;
-                while (!complete && Date.now() < deadline) await sleep(50);
+                if (!complete) await waitForPageReady(this.tabId);
                 await sleep(SETTLE_MS);
             }
         } finally {

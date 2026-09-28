@@ -2,7 +2,7 @@ import test, { afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { JEV_TOKEN_BUDGET, decide, estimateJevTokens, rankedChoices, validateQuestions, type JevClientConfig } from "../lib/jev/client";
 import { describeElement, parsePage, selectCandidates, type PageElement } from "../lib/jev/page";
-import { runFastMode, type FastModeBrowser } from "../lib/jev/fast-mode";
+import { relevantLinks, runFastMode, type FastModeBrowser } from "../lib/jev/fast-mode";
 import { jevCheckAnswer, jevPreflight } from "../lib/jev/gates";
 import type { ModelClient } from "../lib/model-client";
 
@@ -301,31 +301,28 @@ test("for a find-or-read request, Jev is never offered buttons that send, buy or
     assert.ok("click_e7" in criteria);
 });
 
-test("a declined click is skipped, Jev carries on, and it isn't offered again", async () => {
-    const requests = mockJev([
-        () => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
-        () => ({ action: choice("click_e7"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) }),
-        () => ({ action: choice("done"), goal_done: noul(0.97), stuck: noul(0.02) }),
-    ]);
-    const { browser, calls } = fakeBrowser({ home: HOME, pricing: PRICING }, "home");
-    const declined = new Set<string>();
+test("a declined click hands the call to the planner, with nothing clicked", async () => {
+    mockJev([() => ({ action: choice("click_e11"), goal_done: noul(0.1), stuck: noul(0.1), submit_after_typing: noul(0.5) })]);
+    const { browser, calls } = fakeBrowser({ home: HOME }, "home");
     const asked: string[] = [];
-    const result = await runFastMode({
-        ...fastModeOptions(browser),
-        declined,
-        confirm: async (action) => {
-            asked.push(action);
-            declined.add(action);
-            return false;
-        },
-    });
+    const result = await runFastMode({ ...fastModeOptions(browser), confirm: async (action) => { asked.push(action); return false; } });
 
-    assert.equal(result.outcome, "done");
+    assert.equal(result.outcome, "handoff");
+    assert.equal(result.reason, "The user declined button \"Buy now\".");
     assert.deepEqual(asked, ["button \"Buy now\""]);
-    assert.deepEqual(calls, ["click e7"], "Buy now was never clicked");
+    assert.deepEqual(calls, [], "Buy now was never clicked");
     assert.match(result.history[0].outcome, /declined by the user/);
-    assert.ok(!("click_e11" in (requests[1].body.questions.action.criteria || {})), "not offered again");
 });
+
+test("an action the user already declined is never offered to Jev again", async () => {
+    const requests = mockJev([() => ({ action: choice("done"), goal_done: noul(0.95), stuck: noul(0.02) })]);
+    const { browser } = fakeBrowser({ home: HOME }, "home");
+    await runFastMode({ ...fastModeOptions(browser), declined: new Set(["button \"Buy now\""]), confirm: async () => true });
+    const criteria = requests[0].body.questions.action.criteria || {};
+    assert.ok(!("click_e11" in criteria));
+    assert.ok("click_e7" in criteria);
+});
+
 
 test("a field the task gives nothing to type into is skipped, and Jev carries on", async () => {
     const requests = mockJev([
@@ -343,7 +340,7 @@ test("a field the task gives nothing to type into is skipped, and Jev carries on
     assert.ok(!("type_e8" in (requests[1].body.questions.action.criteria || {})), "the field isn't offered again on that page");
 });
 
-test("turning down a sign-in stops work on that site right away", async () => {
+test("turning down a sign-in stops fast mode at once, like any other decline", async () => {
     const login = snapshot("https://portal.example/login", "Sign in", [
         "- main [ref=e1]:",
         "  - textbox \"Login ID\" [ref=e2]: student42",
@@ -358,7 +355,7 @@ test("turning down a sign-in stops work on that site right away", async () => {
     const result = await runFastMode({ ...fastModeOptions(browser), confirm: async () => false });
 
     assert.equal(result.outcome, "handoff");
-    assert.match(result.reason, /chose not to sign in to portal\.example/);
+    assert.match(result.reason, /^The user declined button "LOG IN" to sign in/);
     assert.deepEqual(calls, [], "nothing was clicked, and no wandering around the sign-in page");
 });
 
@@ -510,4 +507,18 @@ test("a second pass cannot finish on the page whose answer was unsupported", asy
     assert.equal(result.outcome, "done");
     assert.equal(result.page.url, "https://example.org/pricing");
     assert.ok(!("done" in (requests[0].body.questions.action.criteria || {})), "done is not offered on the blocked page");
+});
+
+test("answers get the page's links that matter to the task, as absolute URLs", () => {
+    const page = parsePage(snapshot("https://www.youtube.com/results?search_query=dune", "dune - YouTube", [
+        "- main [ref=e1]:",
+        "  - link \"Home\" [ref=e2]:",
+        "    - /url: /",
+        "  - link \"Dune: Part Two | Official Trailer\" [ref=e3]:",
+        "    - /url: /watch?v=Way9Dexny3w",
+        "  - link \"Shorts\" [ref=e4]:",
+        "    - /url: /shorts",
+    ].join("\n")));
+    const links = relevantLinks(page, "find the official trailer for dune part two");
+    assert.deepEqual(links[0], { name: "Dune: Part Two | Official Trailer", url: "https://www.youtube.com/watch?v=Way9Dexny3w" });
 });
