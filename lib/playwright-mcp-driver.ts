@@ -1,5 +1,10 @@
 /**
- * Playwright MCP Driver — Adapter layer between WebPilot agent and @playwright/mcp.
+ * Playwright MCP Driver — Adapter layer between WebPilot agent and Playwright MCP.
+ *
+ * The MCP server ships inside stable `playwright-core` (`lib/coreBundle`); the
+ * `@playwright/mcp` package is only a wrapper around it that pins alpha
+ * Playwright builds, so WebPilot loads it from `playwright-core` directly and
+ * stays on one stable Playwright version and Chromium build.
  *
  * Spawns Playwright MCP in-process via InMemoryTransport, exposes callMcpTool(),
  * and provides snapshot parsing and evidence extraction for the agent runtime.
@@ -10,6 +15,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import type { BrowserChannel, BrowserName } from "./browser-runtime";
 
@@ -86,6 +92,18 @@ export interface PlaywrightMcpOptions {
     isolated?: boolean;
 }
 
+/**
+ * Since Playwright 1.63, snapshots attached to action results (click, navigate...)
+ * are written to `.playwright-mcp/*.yml` files instead of returned inline, while an
+ * explicit `browser_snapshot` call still returns YAML inline. WebPilot always calls
+ * `browser_snapshot` when it needs the page, so action snapshots are turned off:
+ * that skips a capture per action and keeps files out of the working directory.
+ */
+const MCP_OUTPUT_CONFIG = {
+    snapshot: { mode: "none" as const },
+    outputDir: path.join(os.tmpdir(), "webpilot-playwright-mcp"),
+};
+
 function ensureDefaultPlaywrightBrowsersPath() {
     const projectBrowsersPath = path.join(process.cwd(), ".playwright-browsers");
     if (!process.env.PLAYWRIGHT_BROWSERS_PATH && existsSync(projectBrowsersPath)) {
@@ -98,8 +116,14 @@ async function getMcpCreateConnection() {
     ensureDefaultPlaywrightBrowsersPath();
     if (createMcpConnection) return createMcpConnection;
     const appRequire = createRequire(path.join(process.cwd(), "package.json"));
-    const mcpModule = appRequire("@playwright/mcp") as typeof import("@playwright/mcp");
-    createMcpConnection = mcpModule.createConnection;
+    const coreBundle = appRequire("playwright-core/lib/coreBundle") as {
+        tools?: { createConnection?: (config: Record<string, any>) => Promise<any> };
+    };
+    const createConnection = coreBundle.tools?.createConnection;
+    if (typeof createConnection !== "function") {
+        throw new Error("This playwright-core version does not expose the MCP server (lib/coreBundle tools.createConnection).");
+    }
+    createMcpConnection = createConnection;
     return createMcpConnection;
 }
 
@@ -147,7 +171,7 @@ export function ensureManagedChromiumInstalled() {
  * Call once at agent startup. Re-entrant (no-ops if already connected).
  *
  * If `cdpEndpoint` is provided, connects to an existing browser.
- * Otherwise, launches a new browser via @playwright/mcp's own Playwright.
+ * Otherwise, launches a new browser via the MCP server's Playwright.
  */
 export async function initPlaywrightMcp(opts: PlaywrightMcpOptions = {}): Promise<void> {
     if (mcpClient) return; // already initialized
@@ -169,7 +193,7 @@ export async function initPlaywrightMcp(opts: PlaywrightMcpOptions = {}): Promis
         if (opts.userDataDir && !opts.isolated) {
             browserConfig.userDataDir = opts.userDataDir;
         }
-        // Let @playwright/mcp launch its own browser — avoids playwright-core version mismatch.
+        // Let the MCP server launch the browser with the shared playwright-core.
         browserConfig.launchOptions = {
             headless: opts.headless ?? false,
             ...(opts.channel ? { channel: opts.channel } : {}),
@@ -185,6 +209,7 @@ export async function initPlaywrightMcp(opts: PlaywrightMcpOptions = {}): Promis
             "core-navigation" as const,
             "core-tabs" as const,
         ],
+        ...MCP_OUTPUT_CONFIG,
     };
 
     const createConnection = await getMcpCreateConnection();
@@ -212,6 +237,18 @@ export async function closePlaywrightMcp(): Promise<void> {
 }
 
 /**
+ * Playwright 1.63 renamed the element argument of browser_click, browser_type,
+ * browser_hover, browser_select_option and browser_evaluate from `ref` to
+ * `target`. WebPilot's agents and tool schemas keep speaking in snapshot refs,
+ * so the rename is handled here, at the MCP boundary.
+ */
+export function toMcpArguments(args: Record<string, any>): Record<string, any> {
+    if (!("ref" in args)) return args;
+    const { ref, ...rest } = args;
+    return rest.target === undefined && ref ? { ...rest, target: ref } : rest;
+}
+
+/**
  * Call a Playwright MCP tool. Returns the result content array.
  */
 export async function callMcpTool(
@@ -219,7 +256,7 @@ export async function callMcpTool(
     args: Record<string, any> = {}
 ): Promise<any> {
     if (!mcpClient) throw new Error("Playwright MCP not initialized. Call initPlaywrightMcp() first.");
-    const result = await mcpClient.callTool({ name, arguments: args });
+    const result = await mcpClient.callTool({ name, arguments: toMcpArguments(args) });
     // MCP tool results have { content: [{ type: "text", text: "..." }, ...] }
     if (result.isError) {
         const contentArr = Array.isArray(result.content) ? result.content : [];
@@ -282,6 +319,7 @@ export async function createIndependentMcpClient(opts: PlaywrightMcpOptions = {}
             "core-input" as const,
             "core-navigation" as const,
         ],
+        ...MCP_OUTPUT_CONFIG,
     };
 
     const createConnection = await getMcpCreateConnection();
@@ -293,7 +331,7 @@ export async function createIndependentMcpClient(opts: PlaywrightMcpOptions = {}
     await client.connect(clientTransport);
 
     const callTool = async (name: string, args: Record<string, any> = {}): Promise<any> => {
-        const result = await client.callTool({ name, arguments: args });
+        const result = await client.callTool({ name, arguments: toMcpArguments(args) });
         if (result.isError) {
             const contentArr = Array.isArray(result.content) ? result.content : [];
             const errText = contentArr

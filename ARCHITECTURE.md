@@ -45,6 +45,22 @@ Packaged Electron builds store runtime data under the app user-data directory.
 
 The browser layer is built around Playwright MCP. WebPilot can launch a managed browser, use selected Playwright browser channels, connect to a CDP endpoint, or launch a custom executable. Existing profile usage is intentionally conservative because browser profiles can contain sensitive account state.
 
+The MCP server ships inside `playwright-core` (`lib/coreBundle`), and WebPilot loads it from there on a stable Playwright release. The separate `@playwright/mcp` package is only a thin wrapper that pins alpha Playwright builds, so it is not used. `playwright` and `playwright-core` are pinned to the same exact version, so the Chromium build installed by `npm run browsers:install` is the one the MCP server launches.
+
+`lib/playwright-mcp-driver.ts` is the only place that knows the MCP wire format:
+
+- Automatic snapshots after actions are turned off (`snapshot.mode: "none"`); the agent calls `browser_snapshot` whenever it needs the page, which returns the YAML inline. Since Playwright 1.63, action snapshots are written to files instead.
+- Element refs are sent as the MCP `target` argument (renamed from `ref` in Playwright 1.63).
+
+## Upgrading Playwright
+
+Dependabot opens a weekly grouped PR for `playwright` and `playwright-core` (stable releases only). Before merging one:
+
+1. `npm test` runs `tests/playwright-mcp-contract.test.ts`, which fails if a tool or argument WebPilot uses was renamed or removed.
+2. `npm run browsers:install && npm run browser:smoke` checks that the new Chromium build launches.
+3. Run one real task (`npm run agent:cli -- "Go to https://example.com and tell me the page heading."`) to confirm the snapshot format still parses.
+4. For releases, run the `Package Desktop` workflow to package and smoke-test the desktop app on every platform.
+
 ## Tool Schema Versioning
 
 The agent exposes a stable WebPilot browser tool schema from `lib/tool-schema.ts` instead of scattering raw provider payloads through the runtime. The current schema version is `webpilot.browser-tools.v1`.

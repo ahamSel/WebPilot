@@ -13,7 +13,7 @@ WebPilot is meant to be a hackable, local-first alternative to closed agentic br
 ## Features
 
 - Desktop app built with Electron and Next.js.
-- Browser automation through Playwright MCP.
+- Browser automation through Playwright MCP, running on the latest stable Playwright.
 - Model providers: OpenRouter (one key for Gemini, Claude, GPT, Qwen, DeepSeek and hundreds more) and local Ollama.
 - Runtime settings UI for provider, model, browser source, profile strategy, headless mode, and isolation.
 - Local run recording with logs, step traces, artifacts, timing, and final results.
